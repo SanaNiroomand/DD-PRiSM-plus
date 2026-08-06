@@ -1,0 +1,11 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ipynb_checkpoints/
+
+# Local data and checkpoints -- see 01_Preprocessing.ipynb for sources
+Raw/
+Input/
+Processed/
+*.pickle
+*.pt
