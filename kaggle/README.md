@@ -69,74 +69,75 @@ one does.
 
 ---
 
-## Phase 2 -- Data
+## Phase 2 -- Data (entirely on Kaggle)
 
-**Preprocess on Kaggle, not on your laptop.** DOSERESP expands to 2.37 GB and
-the notebook writes roughly another 1 GB of intermediates. A machine with 6 GB
-free cannot do this comfortably, and Windows degrades badly below ~10% free.
-Kaggle gives you 20 GB of working disk and ~30 GB of RAM, `/kaggle/input` does
-not count against the quota, and the data ends up where training happens.
+Every source is scriptable, so nothing needs to be downloaded locally and
+re-uploaded. Run this in the same notebook, with **Internet -> On**:
 
-So only three files ever touch your laptop, and only long enough to upload.
-
-### 1. Fetch what can be automated
-
-```bash
-python scripts/get_data.py --dest data
+```python
+!python scripts/get_data.py --dest /kaggle/working/data
 ```
 
-That pulls the KEGG pathways, the DepMap 23Q4 expression matrix (450 MB), the
-DepMap 18Q3 cell-line annotation, and the O'Neil validation set. All four URLs
-were verified on 2026-08-06.
+That pulls all seven files, about 1 GB, in a few minutes:
 
-### 2. Download three files by hand
-
-The NCI wiki serves these fine to a browser but returns **403 to any script**,
-so they cannot be automated. Save them into `data/Raw/`.
-
-| File | Size | Link |
+| File | Size | Source |
 |---|---|---|
-| `DOSERESP.zip` | 333 MB | [NCI-60 Growth Inhibition Data](https://wiki.nci.nih.gov/display/NCIDTPdata/NCI-60+Growth+Inhibition+Data) |
-| `ComboDrugGrowth_Nov2017.zip` | 86 MB | [NCI-ALMANAC](https://wiki.nci.nih.gov/display/NCIDTPdata/NCI-ALMANAC) |
-| `nsc_smiles.csv` | 17 MB | [NCI Chemical Data](https://wiki.nci.nih.gov/display/NCIDTPdata/Chemical+Data) |
+| `DOSERESP.zip` (NCI60, **version 10**) | 333 MB | NCI wiki |
+| `ComboDrugGrowth_Nov2017.zip` (ALMANAC) | 86 MB | NCI wiki |
+| `nsc_smiles.csv` | 17 MB | NCI wiki |
+| `OmicsExpressionProteinCodingGenesTPMLogp1.csv` | 450 MB | DepMap 23Q4 via figshare |
+| `sample_info_18q3.csv` | 0.06 MB | DepMap 18Q3 via figshare |
+| `c2.cp.kegg_legacy...gmt` | 0.1 MB | Broad data host |
+| `oneil_combination_response.xls` | 39 MB | AACR |
 
-**Take DOSERESP version 10, not the current one.** The July 2026 release
-changed format: it now reports one row per experiment (`EXPID`) instead of
-aggregating across experiments, so your row counts will not match the paper.
-Version 10 (January 2024) is what the authors used and is still available under
-"Previous Releases" or by appending `?version=10` to the attachment URL. The
-exact URL is printed by `get_data.py`.
+Then verify:
 
-`nsc_smiles.csv` is a shortcut: it maps NSC numbers to SMILES directly. The
-paper instead parses `Chem2D_Jun2016.zip` (80 MB) with RDKit. Use Chem2D if you
-want to match the paper exactly; use `nsc_smiles.csv` if you want it simpler.
-
-### 3. Check before uploading
-
-```bash
-python scripts/get_data.py --dest data --check
+```python
+!python scripts/get_data.py --dest /kaggle/working/data --check
 ```
 
-Every row must say `ok`. A `SUSPECT SIZE` usually means you saved an HTML error
-page instead of the file.
+Every required row must read `ok`. A `SUSPECT SIZE` usually means an HTML error
+page got saved instead of the file.
 
-### 4. Upload to Kaggle and preprocess there
+### Why the URLs look dead when they are not
 
-- **Create -> Dataset**, drag in `data/Raw/`, set it **Private** (~1 GB)
-- In your notebook: **Add Input -> Datasets ->** your dataset
-- Then delete the local copies to get your disk space back
+The NCI wiki answers **403 to a HEAD request** but serves a **GET** perfectly
+well, provided a browser User-Agent is set. Checking those links with
+`curl -I` reports 403 and makes them look blocked. They are not. `get_data.py`
+sets the User-Agent and uses GET.
 
-Run the preprocessing on Kaggle. Two notes that will save you time:
+MSigDB is similar: the web portal wants an account, but the Broad's data host
+serves the same GMT with no login.
 
-- Read DOSERESP straight out of the zip -- `pd.read_csv("DOSERESP.zip")` works
+### Pin DOSERESP to version 10
+
+The July 2026 release changed format -- it reports one row per experiment
+(`EXPID`) instead of aggregating across experiments, so your row counts will
+not match the paper and you lose the only checkpoint that tells you whether
+preprocessing worked. Version 10 (January 2024) is what the authors used and is
+still served. The URL in `get_data.py` is already pinned.
+
+### Preprocessing, on Kaggle
+
+Kaggle gives 20 GB of working disk and ~30 GB of RAM, which is comfortable.
+Two notes that save time and space:
+
+- Read DOSERESP straight from the zip -- `pd.read_csv("DOSERESP.zip")` works
   and avoids writing 2.37 GB to disk.
-- The 18Q3 annotation arrives with columns `Broad_ID`, `CCLE_name`, `aliases`.
-  The notebook expects `CCLE_Name` and `Aliases`, so rename them first.
+- `sample_info_18q3.csv` arrives with columns `Broad_ID`, `CCLE_name`,
+  `aliases`. The notebook expects `CCLE_Name` and `Aliases`; rename first.
+- RDKit is not preinstalled: `!pip install rdkit`. You can skip it entirely by
+  using `nsc_smiles.csv` instead of parsing Chem2D.
 
-**Checkpoint.** The supplement's Table S2 says NCI60 must yield **7,915,900**
-training responses; Table S4 says the combination training set must yield
-**1,387,317**. Hit those and your preprocessing is right. This is why the
-version-10 pin matters -- with the July 2026 file these numbers are meaningless.
+**Checkpoint.** Table S2 says NCI60 must yield **7,915,900** training
+responses; Table S4 says the combination training set must yield **1,387,317**.
+Hit those and preprocessing is right.
+
+### Keep the result
+
+`/kaggle/working` is wiped when the session ends. Click **Save Version** once
+preprocessing finishes, then add that output as an input dataset to the next
+session so you never redo this.
 
 ---
 
@@ -195,6 +196,6 @@ Measured end to end on a T4, per NCI60 epoch:
 python -m pytest tests -q                              # 23 correctness checks
 python kaggle/gpu_check.py --batch 1024 --iters 10     # correctness + speed on GPU
 python bench/bench_monotherapy.py --device cuda --backward --batch 1024
-python scripts/get_data.py --dest data                 # fetch the automatable sources
-python scripts/get_data.py --dest data --check         # verify all seven files
+python scripts/get_data.py --dest data                 # fetch all seven sources (~1 GB)
+python scripts/get_data.py --dest data --check         # verify them
 ```
