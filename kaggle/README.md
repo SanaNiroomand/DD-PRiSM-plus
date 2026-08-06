@@ -54,52 +54,89 @@ The script prints three blocks:
   suite has only ever checked on CPU. If it says MISMATCH, stop and report it.
 - **SPEED** -- a table across bucket counts, ending in a verdict line.
 
-**Copy the whole SPEED table back.** Whichever bucket count wins there is the
-one we use for real training. On CPU the answer is 8-16 buckets at roughly
-2x; a GPU should do considerably better, because batching small operations
-mainly saves kernel-launch overhead, and that is a GPU cost.
+Whichever bucket count wins is the one to train with.
+
+**Already measured on a Tesla T4** (batch 1024, forward+backward): 8 buckets at
+**5.2x**, 16 buckets at 4.9x, against 232 ms for the published loop. Rerun this
+on your own session to confirm, since a different GPU may prefer a different
+bucket count.
+
+The `1 bucket` row is worth a look. It pads every pathway to the widest, doing
+~17x more arithmetic than necessary, and still beats the loop on a GPU (1.4x)
+while *losing* badly on CPU (0.2x). That is the whole argument in one line:
+on a GPU the cost is how many operations you issue, not how much maths each
+one does.
 
 ---
 
-## Phase 2 -- Data (the slow part, done on your laptop)
+## Phase 2 -- Data
 
-None of this needs a GPU. Preprocessing is ordinary CPU work.
+**Preprocess on Kaggle, not on your laptop.** DOSERESP expands to 2.37 GB and
+the notebook writes roughly another 1 GB of intermediates. A machine with 6 GB
+free cannot do this comfortably, and Windows degrades badly below ~10% free.
+Kaggle gives you 20 GB of working disk and ~30 GB of RAM, `/kaggle/input` does
+not count against the quota, and the data ends up where training happens.
 
-### 1. Download the raw files
+So only three files ever touch your laptop, and only long enough to upload.
 
-| File | Where | Note |
-|---|---|---|
-| `DOSERESP.csv` (NCI60) | [NCI-60 Growth Inhibition Data](https://wiki.nci.nih.gov/display/NCIDTPdata/NCI-60+Growth+Inhibition+Data) | **Browser only** -- the NCI wiki returns 403 to scripts |
-| `ComboDrugGrowth_Nov2017.csv` | [NCI-ALMANAC](https://wiki.nci.nih.gov/display/NCIDTPdata/NCI-ALMANAC) | Browser only |
-| `Chem2D_Jun2016.sdf` | [NCI Chemical Data](https://wiki.nci.nih.gov/display/NCIDTPdata/Chemical+Data) | Browser only |
-| `OmicsExpressionProteinCodingGenesTPMLogp1.csv` | [DepMap 23Q4](https://depmap.org/portal/download/all/) | Large; pin release 23Q4 |
-| `DepMap-2018q3-celllines.csv` | DepMap 18Q3 | Needed for cell-line name matching |
-| `c2.cp.kegg_legacy.v2023.2.Hs.symbols.gmt` | [MSigDB](https://www.gsea-msigdb.org/gsea/msigdb/) | Needs a free account now |
-| O'Neil supplementary `.xls` | [AACR MCT 15(6):1155](https://aacrjournals.org/mct/article/15/6/1155/92159/) | External validation only -- can wait |
-
-Put them all in one folder and point `base_directory` at it.
-
-### 2. Preprocess
-
-Run `01_Preprocessing.ipynb`. You will need RDKit, which is not installed yet:
+### 1. Fetch what can be automated
 
 ```bash
-pip install rdkit
+python scripts/get_data.py --dest data
 ```
 
-**Checkpoint:** the supplement's Table S2 says NCI60 must yield **7,915,900**
-training responses, and Table S4 says the combination training set must yield
-**1,387,317**. If you hit those numbers, preprocessing is correct. Do not skip
-this -- everything downstream depends on it.
+That pulls the KEGG pathways, the DepMap 23Q4 expression matrix (450 MB), the
+DepMap 18Q3 cell-line annotation, and the O'Neil validation set. All four URLs
+were verified on 2026-08-06.
 
-### 3. Upload to Kaggle
+### 2. Download three files by hand
 
-Upload the *preprocessed* inputs, not the raw downloads -- they are far
-smaller.
+The NCI wiki serves these fine to a browser but returns **403 to any script**,
+so they cannot be automated. Save them into `data/Raw/`.
 
-- **Create -> Dataset**, drag in the processed folder, set it **Private**
+| File | Size | Link |
+|---|---|---|
+| `DOSERESP.zip` | 333 MB | [NCI-60 Growth Inhibition Data](https://wiki.nci.nih.gov/display/NCIDTPdata/NCI-60+Growth+Inhibition+Data) |
+| `ComboDrugGrowth_Nov2017.zip` | 86 MB | [NCI-ALMANAC](https://wiki.nci.nih.gov/display/NCIDTPdata/NCI-ALMANAC) |
+| `nsc_smiles.csv` | 17 MB | [NCI Chemical Data](https://wiki.nci.nih.gov/display/NCIDTPdata/Chemical+Data) |
+
+**Take DOSERESP version 10, not the current one.** The July 2026 release
+changed format: it now reports one row per experiment (`EXPID`) instead of
+aggregating across experiments, so your row counts will not match the paper.
+Version 10 (January 2024) is what the authors used and is still available under
+"Previous Releases" or by appending `?version=10` to the attachment URL. The
+exact URL is printed by `get_data.py`.
+
+`nsc_smiles.csv` is a shortcut: it maps NSC numbers to SMILES directly. The
+paper instead parses `Chem2D_Jun2016.zip` (80 MB) with RDKit. Use Chem2D if you
+want to match the paper exactly; use `nsc_smiles.csv` if you want it simpler.
+
+### 3. Check before uploading
+
+```bash
+python scripts/get_data.py --dest data --check
+```
+
+Every row must say `ok`. A `SUSPECT SIZE` usually means you saved an HTML error
+page instead of the file.
+
+### 4. Upload to Kaggle and preprocess there
+
+- **Create -> Dataset**, drag in `data/Raw/`, set it **Private** (~1 GB)
 - In your notebook: **Add Input -> Datasets ->** your dataset
-- It appears at `/kaggle/input/<your-dataset-name>/`
+- Then delete the local copies to get your disk space back
+
+Run the preprocessing on Kaggle. Two notes that will save you time:
+
+- Read DOSERESP straight out of the zip -- `pd.read_csv("DOSERESP.zip")` works
+  and avoids writing 2.37 GB to disk.
+- The 18Q3 annotation arrives with columns `Broad_ID`, `CCLE_name`, `aliases`.
+  The notebook expects `CCLE_Name` and `Aliases`, so rename them first.
+
+**Checkpoint.** The supplement's Table S2 says NCI60 must yield **7,915,900**
+training responses; Table S4 says the combination training set must yield
+**1,387,317**. Hit those and your preprocessing is right. This is why the
+version-10 pin matters -- with the July 2026 file these numbers are meaningless.
 
 ---
 
@@ -155,7 +192,9 @@ Measured end to end on a T4, per NCI60 epoch:
 ## Quick reference
 
 ```bash
-python -m pytest tests -q                              # 17 correctness checks
+python -m pytest tests -q                              # 23 correctness checks
 python kaggle/gpu_check.py --batch 1024 --iters 10     # correctness + speed on GPU
 python bench/bench_monotherapy.py --device cuda --backward --batch 1024
+python scripts/get_data.py --dest data                 # fetch the automatable sources
+python scripts/get_data.py --dest data --check         # verify all seven files
 ```
