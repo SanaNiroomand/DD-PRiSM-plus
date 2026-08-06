@@ -119,11 +119,36 @@ Training NCI60 will not finish in one session. So:
 
 ### Before the first real run
 
-Set `num_workers=4` in the DataLoader. The published notebooks use
-`num_workers=0`, which prepares data on the main thread while the GPU waits. I
-measured data preparation at ~50 ms per batch: invisible on CPU (8% of a step),
-but roughly 70% of a step once the GPU makes the model part fast. This is a
-one-line change and on a GPU it will matter more than anything else here.
+Use `ddprism.data` instead of the published `MonotherapyDataset`, and skip
+`DataLoader` entirely.
+
+The published dataset rebuilds 186 tensors per batch from pandas object
+columns: about 50 ms per batch of 1024. That was invisible when the model took
+560 ms on CPU, but it is 53% of every step once the model runs at 44 ms on a
+T4. Raising `num_workers` would help, but the work is avoidable rather than
+parallelisable -- there are only 66 cell lines, so their pathway expression is
+a small fixed table. Packed once it is **31 MB**, fits on any GPU, and each
+batch becomes an index gather costing ~6 ms.
+
+```python
+from ddprism.data import MonotherapyBatches, MonotherapyTensorData
+
+data = MonotherapyTensorData(model.spec, expression_by_cellline, fingerprints,
+                             device="cuda")
+batches = MonotherapyBatches(data, cell_ids, drug_ids, dose, viability,
+                             batch_size=1024, shuffle=True)
+
+for (genes, fp, dose), y in batches:
+    prediction = model(genes, fp, dose)
+```
+
+Measured end to end on a T4, per NCI60 epoch:
+
+| setup | epoch |
+|---|---|
+| published loop + published dataset | ~36 min |
+| bucketed model + published dataset | ~12 min |
+| bucketed model + `ddprism.data` | **~6.5 min** |
 
 ---
 
