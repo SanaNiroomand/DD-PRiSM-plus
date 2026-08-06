@@ -23,8 +23,15 @@ we invest any effort in the data.
 
 ### 3. Paste and run these cells
 
+Two Jupyter rules worth knowing, because breaking either gives you a confusing
+`SyntaxError`: shell commands need a leading `!`, and `%cd` is a notebook magic
+that must sit alone on its own line. You cannot chain them with `&&`.
+
 ```python
 !git clone https://github.com/SanaNiroomand/DD-PRiSM-plus.git /kaggle/working/ddprism-plus
+```
+
+```python
 %cd /kaggle/working/ddprism-plus
 ```
 
