@@ -111,19 +111,59 @@ serves the same GMT with no login.
 
 ### Pin DOSERESP to version 10
 
-The July 2026 release changed format -- it reports one row per experiment
-(`EXPID`) instead of aggregating across experiments, so your row counts will
-not match the paper and you lose the only checkpoint that tells you whether
-preprocessing worked. Version 10 (January 2024) is what the authors used and is
-still served. The URL in `get_data.py` is already pinned.
+NCI keeps revising this file; the current one is version 20 (July 2026) and
+carries experiments run since the paper. Different rows means different counts,
+and you lose the only checkpoint that tells you whether preprocessing worked.
+Version 10 (January 2024) is what the authors used and is still served. The URL
+in `get_data.py` is already pinned to it.
+
+(The wiki's note about switching from aggregated values to per-experiment
+`EXPID` rows predates version 10 -- that column is already present there -- so
+the two versions differ in content, not layout.)
 
 ### Preprocessing, on Kaggle
 
-Kaggle gives 20 GB of working disk and ~30 GB of RAM, which is comfortable.
-Two notes that save time and space:
+Measured, not guessed. `DOSERESP.csv` is **23,636,946 rows / 2.44 GB
+uncompressed**, covering 163 cell lines and 57,495 drugs before any filtering.
 
-- Read DOSERESP straight from the zip -- `pd.read_csv("DOSERESP.zip")` works
-  and avoids writing 2.37 GB to disk.
+**DOSERESP is Deflate64.** The standard library reads its directory but cannot
+decompress it -- `pd.read_csv("DOSERESP.zip")` fails with
+`NotImplementedError: That compression method is not supported`, and so does
+`zipfile.extractall`. One package fixes it:
+
+```python
+!pip install zipfile-deflate64
+```
+```python
+import zipfile_deflate64, zipfile   # the import patches zipfile in place
+import pandas as pd
+z = zipfile.ZipFile("data/Raw/DOSERESP.zip")
+with z.open("DOSERESP.csv") as f:
+    ...
+```
+
+**Read it lean, and never `pd.read_csv` the whole thing.** Loading all 18
+columns at default dtypes costs **11.1 GB**. Taking only the six columns the
+paper uses, with tight dtypes, costs a fraction of that:
+
+```python
+cols = ["NSC", "CONCENTRATION", "CELL_NAME",
+        "AVERAGE_GIPRCNT", "STDDEV_GIPRCNT", "CONCENTRATION_UNIT"]
+dtypes = {"NSC": "int32", "CONCENTRATION": "float32",
+          "AVERAGE_GIPRCNT": "float32", "STDDEV_GIPRCNT": "float32",
+          "CELL_NAME": "category", "CONCENTRATION_UNIT": "category"}
+
+for chunk in pd.read_csv(f, usecols=cols, dtype=dtypes, chunksize=2_000_000):
+    ...  # filter and aggregate here, do not accumulate raw chunks
+```
+
+That is a **26x** reduction per row. Filter inside the loop -- keep
+`CONCENTRATION_UNIT == "M"` and the 66 cell lines you actually need -- and peak
+memory stays in the hundreds of MB rather than tens of GB. A full lean pass
+takes about a minute.
+
+Two smaller things:
+
 - `sample_info_18q3.csv` arrives with columns `Broad_ID`, `CCLE_name`,
   `aliases`. The notebook expects `CCLE_Name` and `Aliases`; rename first.
 - RDKit is not preinstalled: `!pip install rdkit`. You can skip it entirely by

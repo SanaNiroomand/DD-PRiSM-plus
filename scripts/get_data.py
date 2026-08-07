@@ -20,8 +20,8 @@ supplement's Table S2. Version 10 keeps the published checkpoints meaningful.
 """
 
 import argparse
-import sys
 import urllib.request
+import zipfile
 from pathlib import Path
 
 BROWSER_AGENT = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -43,8 +43,12 @@ SOURCES = [
         "url": ("https://wiki.nci.nih.gov/download/attachments/147193864/"
                 "DOSERESP.zip?version=10&modificationDate=1704733010000&api=v2"),
         "approx_mb": 333.4,
-        "note": "NCI60 dose-response, VERSION 10 to match the paper. Expands to "
-                "2.37 GB -- read it straight from the zip rather than extracting.",
+        "note": "NCI60 dose-response, VERSION 10 to match the paper (the current "
+                "version 20 carries newer experiments, so row counts drift). "
+                "23,636,946 rows, 2.44 GB uncompressed. Compressed with "
+                "Deflate64, which the standard library cannot decompress: "
+                "pip install zipfile-deflate64, then `import zipfile_deflate64` "
+                "before opening it. Read from the zip rather than extracting.",
     },
     {
         "key": "almanac",
@@ -107,44 +111,90 @@ SOURCES = [
 BY_KEY = {source["key"]: source for source in SOURCES}
 
 
-def fetch(source, dest):
-    """Stream to disk so a 450 MB file never sits fully in memory."""
+def fetch(source, dest, attempts=4):
+    """Stream to disk, resuming on failure, and refuse to accept a short file.
+
+    A dropped connection looks exactly like a clean end-of-stream to
+    ``response.read()``, so the byte count is checked against Content-Length.
+    Without that a truncated download is silently written out as if complete --
+    which produces a corrupt archive that only fails much later.
+    """
     target = dest / source["filename"]
     if target.exists() and target.stat().st_size > 1024:
         print(f"  [skip]     {source['filename']} ({target.stat().st_size / 1e6:.1f} MB)")
         return True
 
-    print(f"  [get]      {source['filename']} (~{source['approx_mb']:.1f} MB)", flush=True)
-    request = urllib.request.Request(source["url"],
-                                     headers={"User-Agent": BROWSER_AGENT})
     partial = target.with_suffix(target.suffix + ".part")
-    try:
-        with urllib.request.urlopen(request, timeout=180) as response:
-            first = response.read(512)
-            # An HTML body means a login wall or a bot check, not the file.
-            if first.lstrip().lower().startswith((b"<!doctype", b"<html")):
-                print("             FAILED: got an HTML page, not the file")
-                return False
-            written = 0
-            with partial.open("wb") as handle:
-                handle.write(first)
-                written += len(first)
-                while True:
-                    chunk = response.read(1 << 20)
-                    if not chunk:
-                        break
-                    handle.write(chunk)
-                    written += len(chunk)
-                    if written % (50 << 20) < (1 << 20):
-                        print(f"             {written / 1e6:.0f} MB...", flush=True)
-    except Exception as error:
-        print(f"             FAILED: {error}")
-        partial.unlink(missing_ok=True)
-        return False
+    print(f"  [get]      {source['filename']} (~{source['approx_mb']:.1f} MB)", flush=True)
 
-    partial.replace(target)
-    print(f"             saved {written / 1e6:.1f} MB")
-    return True
+    for attempt in range(1, attempts + 1):
+        have = partial.stat().st_size if partial.exists() else 0
+        headers = {"User-Agent": BROWSER_AGENT}
+        if have:
+            headers["Range"] = f"bytes={have}-"
+            print(f"             resuming at {have / 1e6:.0f} MB "
+                  f"(attempt {attempt}/{attempts})", flush=True)
+
+        try:
+            request = urllib.request.Request(source["url"], headers=headers)
+            with urllib.request.urlopen(request, timeout=180) as response:
+                if have and response.status != 206:
+                    # Server ignored the Range header; start over cleanly.
+                    partial.unlink(missing_ok=True)
+                    have = 0
+
+                declared = response.headers.get("Content-Length")
+                expected = have + int(declared) if declared else None
+
+                first = response.read(512)
+                if not have and first.lstrip().lower().startswith((b"<!doctype", b"<html")):
+                    print("             FAILED: got an HTML page, not the file")
+                    return False
+
+                written = have
+                with partial.open("ab" if have else "wb") as handle:
+                    handle.write(first)
+                    written += len(first)
+                    while True:
+                        chunk = response.read(1 << 20)
+                        if not chunk:
+                            break
+                        handle.write(chunk)
+                        written += len(chunk)
+                        if written % (50 << 20) < (1 << 20):
+                            print(f"             {written / 1e6:.0f} MB...", flush=True)
+        except Exception as error:
+            print(f"             interrupted: {error}")
+            continue
+
+        if expected is not None and written < expected:
+            print(f"             short: {written / 1e6:.1f} of "
+                  f"{expected / 1e6:.1f} MB -- retrying")
+            continue
+
+        partial.replace(target)
+        print(f"             saved {written / 1e6:.1f} MB")
+        return True
+
+    print(f"             FAILED after {attempts} attempts; "
+          f"partial kept at {partial.name} for resume")
+    return False
+
+
+def _zip_ok(path):
+    """Does the archive's central directory parse?
+
+    Deliberately does not call ``testzip()``. That decompresses every member,
+    which costs minutes on a 2.4 GB payload and, worse, raises
+    NotImplementedError on DOSERESP because it is Deflate64 -- a method the
+    standard library can read the directory of but not decompress. A perfectly
+    good download would be reported corrupt.
+    """
+    try:
+        with zipfile.ZipFile(path) as archive:
+            return bool(archive.namelist())
+    except Exception:
+        return False
 
 
 def check(dest):
@@ -160,8 +210,15 @@ def check(dest):
         else:
             size_mb = target.stat().st_size / 1e6
             ratio = size_mb / source["approx_mb"] if source["approx_mb"] else 1
-            state = "ok" if 0.7 < ratio < 1.4 else "SUSPECT SIZE"
             detail = f"{size_mb:8.1f} MB (expected ~{source['approx_mb']:.1f})"
+            if not 0.95 < ratio < 1.05:
+                state = "SUSPECT SIZE"
+                missing.append(source)
+            elif target.suffix == ".zip" and not _zip_ok(target):
+                state, detail = "CORRUPT ZIP", detail + "  -- will not open"
+                missing.append(source)
+            else:
+                state = "ok"
         print(f"  {state:<13} {source['filename'] + tag:<58} {detail}")
 
     if missing:
