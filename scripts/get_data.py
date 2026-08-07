@@ -177,7 +177,7 @@ def fetch(source, dest, attempts=4):
         except Exception as error:
             print(f"             interrupted: {error}")
             if attempt < attempts:
-                delay = min(60, 5 * 2 ** (attempt - 1))
+                delay = min(300, 5 * 2 ** (attempt - 1))
                 print(f"             waiting {delay}s before retry", flush=True)
                 time.sleep(delay)
             continue
@@ -268,6 +268,9 @@ def main():
                         help="fetch just these keys")
     parser.add_argument("--include-optional", action="store_true",
                         help="also fetch Chem2D_Jun2016.zip")
+    parser.add_argument("--attempts", type=int, default=5,
+                        help="retries per file; raise it when figshare is "
+                             "rate-limiting with 202s (backoff caps at 5 min)")
     args = parser.parse_args()
 
     dest = args.dest / "Raw" if (args.dest / "Raw").exists() else args.dest
@@ -286,7 +289,7 @@ def main():
     print(f"Fetching {len(wanted)} files (~{total / 1000:.1f} GB) into "
           f"{dest.resolve()}\n")
 
-    failed = [s["filename"] for s in wanted if not fetch(s, dest)]
+    failed = [s["filename"] for s in wanted if not fetch(s, dest, args.attempts)]
     print()
     if failed:
         print(f"{len(failed)} failed: {', '.join(failed)}")
