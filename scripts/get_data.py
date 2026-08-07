@@ -20,9 +20,14 @@ supplement's Table S2. Version 10 keeps the published checkpoints meaningful.
 """
 
 import argparse
+import time
 import urllib.request
 import zipfile
 from pathlib import Path
+
+
+class TransientResponse(Exception):
+    """Server said 'not now' rather than failing outright."""
 
 BROWSER_AGENT = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
                  "(KHTML, like Gecko) Chrome/140.0 Safari/537.36")
@@ -138,6 +143,12 @@ def fetch(source, dest, attempts=4):
         try:
             request = urllib.request.Request(source["url"], headers=headers)
             with urllib.request.urlopen(request, timeout=180) as response:
+                # figshare answers 202 with an empty body while it prepares a
+                # large file or throttles you. It is a 2xx, so urlopen does not
+                # raise, and read() returns b"" -- indistinguishable from a
+                # finished download unless the status is checked.
+                if response.status == 202:
+                    raise TransientResponse("202 Accepted (server busy)")
                 if have and response.status != 206:
                     # Server ignored the Range header; start over cleanly.
                     partial.unlink(missing_ok=True)
@@ -165,11 +176,30 @@ def fetch(source, dest, attempts=4):
                             print(f"             {written / 1e6:.0f} MB...", flush=True)
         except Exception as error:
             print(f"             interrupted: {error}")
+            if attempt < attempts:
+                delay = min(60, 5 * 2 ** (attempt - 1))
+                print(f"             waiting {delay}s before retry", flush=True)
+                time.sleep(delay)
             continue
 
-        if expected is not None and written < expected:
-            print(f"             short: {written / 1e6:.1f} of "
-                  f"{expected / 1e6:.1f} MB -- retrying")
+        # Three ways a transfer can end early and still look clean.
+        # figshare redirects to an S3 link signed for ten seconds; miss that
+        # window and the body comes back empty with no Content-Length, which
+        # read() reports as a perfectly ordinary end of stream.
+        floor = 0.5 * source["approx_mb"] * 1e6
+        if written == 0:
+            problem = "empty response"
+        elif expected is not None and written < expected:
+            problem = f"short: {written / 1e6:.1f} of {expected / 1e6:.1f} MB"
+        elif expected is None and written < floor:
+            problem = (f"suspiciously small: {written / 1e6:.1f} MB vs "
+                       f"~{source['approx_mb']:.1f} MB expected")
+        else:
+            problem = None
+
+        if problem:
+            print(f"             {problem} -- retrying")
+            partial.unlink(missing_ok=True)   # signed URLs cannot be resumed
             continue
 
         partial.replace(target)
