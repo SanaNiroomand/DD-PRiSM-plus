@@ -99,6 +99,28 @@ Then verify:
 Every required row must read `ok`. A `SUSPECT SIZE` usually means an HTML error
 page got saved instead of the file.
 
+### If figshare answers 202
+
+The two DepMap files come from figshare, which starts returning **202 Accepted
+with an empty body** to every request from an IP after a handful of downloads.
+It is a 2xx, so naive code reads an empty response and saves a 0-byte file
+believing it succeeded. `get_data.py` detects this and backs off, but no amount
+of backoff helps while the throttle holds -- it outlasted 15 minutes of retries
+during development.
+
+It is per-client, not per-file: a small file that had downloaded seconds earlier
+began returning 202 as well. There is no mirror, and `depmap.org/portal/api`
+serves a bot-verification page rather than data.
+
+If you hit it, wait and rerun just that file:
+
+```bash
+python scripts/get_data.py --dest data --only depmap_expression --attempts 9
+```
+
+A fresh Kaggle session usually is not affected, since the throttle follows the
+client address.
+
 ### Why the URLs look dead when they are not
 
 The NCI wiki answers **403 to a HEAD request** but serves a **GET** perfectly
