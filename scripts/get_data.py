@@ -21,6 +21,7 @@ supplement's Table S2. Version 10 keeps the published checkpoints meaningful.
 
 import argparse
 import time
+import urllib.parse
 import urllib.request
 import zipfile
 from pathlib import Path
@@ -273,7 +274,10 @@ def main():
                              "rate-limiting with 202s (backoff caps at 5 min)")
     args = parser.parse_args()
 
-    dest = args.dest / "Raw" if (args.dest / "Raw").exists() else args.dest
+    # Files land directly in --dest. An earlier version silently appended
+    # "Raw" when that folder happened to exist, so the same command wrote to
+    # different places on different machines.
+    dest = args.dest
     dest.mkdir(parents=True, exist_ok=True)
 
     if args.check:
@@ -289,7 +293,20 @@ def main():
     print(f"Fetching {len(wanted)} files (~{total / 1000:.1f} GB) into "
           f"{dest.resolve()}\n")
 
-    failed = [s["filename"] for s in wanted if not fetch(s, dest, args.attempts)]
+    # When a host is throttling, every file on it will fail the same way.
+    # Retrying each one separately burned 30 of 32 minutes in a Kaggle session,
+    # so give up on the host after the first file exhausts its attempts.
+    failed, throttled = [], set()
+    for source in wanted:
+        host = urllib.parse.urlparse(source["url"]).netloc
+        if host in throttled:
+            print(f"  [defer]    {source['filename']} -- {host} is throttling; "
+                  f"rerun this file later")
+            failed.append(source["filename"])
+            continue
+        if not fetch(source, dest, args.attempts):
+            failed.append(source["filename"])
+            throttled.add(host)
     print()
     if failed:
         print(f"{len(failed)} failed: {', '.join(failed)}")
