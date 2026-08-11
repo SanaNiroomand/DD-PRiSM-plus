@@ -20,6 +20,7 @@ supplement's Table S2. Version 10 keeps the published checkpoints meaningful.
 """
 
 import argparse
+import hashlib
 import time
 import urllib.parse
 import urllib.request
@@ -79,6 +80,7 @@ SOURCES = [
         "filename": "OmicsExpressionProteinCodingGenesTPMLogp1.csv",
         "url": "https://ndownloader.figshare.com/files/43347204",
         "approx_mb": 449.8,
+        "md5": "9402aa25a19279bb20a5d6cf8791a88f",
         "note": "DepMap Public 23Q4, log2(TPM+1) for protein-coding genes.",
     },
     {
@@ -86,6 +88,7 @@ SOURCES = [
         "filename": "sample_info_18q3.csv",
         "url": "https://ndownloader.figshare.com/files/12704612",
         "approx_mb": 0.06,
+        "md5": "bc72d3be18f1f9b69e8ca05422f26bdb",
         "note": "DepMap 18Q3 cell-line annotation. Columns are Broad_ID, "
                 "CCLE_name, aliases -- the notebook expects CCLE_Name and "
                 "Aliases, so rename before use.",
@@ -212,6 +215,14 @@ def fetch(source, dest, attempts=4):
     return False
 
 
+def _md5(path, chunk=1 << 20):
+    digest = hashlib.md5()
+    with path.open("rb") as handle:
+        for block in iter(lambda: handle.read(chunk), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
 def _zip_ok(path):
     """Does the archive's central directory parse?
 
@@ -247,6 +258,9 @@ def check(dest):
                 missing.append(source)
             elif target.suffix == ".zip" and not _zip_ok(target):
                 state, detail = "CORRUPT ZIP", detail + "  -- will not open"
+                missing.append(source)
+            elif source.get("md5") and _md5(target) != source["md5"]:
+                state, detail = "BAD CHECKSUM", detail + "  -- md5 mismatch"
                 missing.append(source)
             else:
                 state = "ok"
