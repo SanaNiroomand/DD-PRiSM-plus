@@ -12,7 +12,7 @@ import json
 import sys
 from pathlib import Path
 
-OUT = Path(__file__).resolve().parents[1] / "kaggle" / "01_setup_and_data.ipynb"
+KAGGLE = Path(__file__).resolve().parents[1] / "kaggle"
 
 
 def md(*lines):
@@ -146,6 +146,75 @@ md("## 8. Save it",
 ]
 
 
+
+PREPROCESS_CELLS = [
+md("# DD-PRiSM-plus — Step 2: preprocessing",
+   "",
+   "Turns the raw downloads into training-ready tables. **CPU session** — no GPU",
+   "needed, and none should be spent here.",
+   "",
+   "**Attach step 1's output first:** right panel → **Add Input → Your Work →**",
+   "**Notebook Output**, pick your `01_setup_and_data` version.",
+   "",
+   "Every stage prints the paper's expected count next to the actual one. The two",
+   "that decide whether this worked:",
+   "",
+   "| table | expected |",
+   "|---|---|",
+   "| NCI60 training rows | **7,915,900** |",
+   "| combination training rows | **1,387,317** |"),
+
+code("import os, glob, subprocess",
+     "",
+     "REPO = '/kaggle/working/ddprism-plus'",
+     "OUT  = '/kaggle/working/processed'",
+     "",
+     "if os.path.exists(REPO):",
+     "    !cd {REPO} && git pull --quiet",
+     "else:",
+     "    !git clone --quiet https://github.com/SanaNiroomand/DD-PRiSM-plus.git {REPO}",
+     "os.chdir(REPO)",
+     "",
+     "# Find step 1's data wherever Kaggle mounted it.",
+     "hits = glob.glob('/kaggle/input/**/DOSERESP.zip', recursive=True)",
+     "if not hits:",
+     "    raise SystemExit('DOSERESP.zip not found under /kaggle/input -- attach '",
+     "                     'the output of 01_setup_and_data via Add Input.')",
+     "DATA = os.path.dirname(hits[0])",
+     "print('data :', DATA)",
+     "print('files:', len(os.listdir(DATA)))"),
+
+md("## Install"),
+
+code("!pip install --quiet zipfile-deflate64 rdkit pyarrow",
+     "print('installed')"),
+
+md("## Verify the inputs before spending time on them"),
+
+code("!python scripts/get_data.py --dest {DATA} --check"),
+
+md("## Run preprocessing",
+   "",
+   "Roughly 10-20 minutes. DOSERESP is read in chunks, six columns at tight",
+   "dtypes, so peak memory stays in the hundreds of MB rather than the 11.1 GB a",
+   "naive full read would cost."),
+
+code("!python scripts/preprocess.py --data {DATA} --out {OUT}"),
+
+md("## What came out"),
+
+code("!ls -la {OUT} && du -sh {OUT}"),
+
+md("## Save it",
+   "",
+   "**Save Version → Save & Run All (Commit)**, then attach this output to the",
+   "training notebook.",
+   "",
+   "If a count is off, send me the numbers — every stage prints what the paper",
+   "expected, so a mismatch says which step drifted."),
+]
+
+
 def _as_python(source):
     """Make a notebook cell parseable as plain Python.
 
@@ -175,16 +244,16 @@ def check_cells(cells):
     return problems
 
 
-def main():
-    problems = check_cells(CELLS)
+def write(cells, name):
+    problems = check_cells(cells)
     if problems:
-        print("REFUSING TO WRITE -- code cells do not parse:")
+        print(f"REFUSING TO WRITE {name} -- code cells do not parse:")
         for problem in problems:
             print("  " + problem)
-        return 1
+        return False
 
     notebook = {
-        "cells": CELLS,
+        "cells": cells,
         "metadata": {
             "kernelspec": {"display_name": "Python 3", "language": "python",
                            "name": "python3"},
@@ -192,11 +261,17 @@ def main():
         },
         "nbformat": 4, "nbformat_minor": 5,
     }
-    OUT.write_text(json.dumps(notebook, indent=1), encoding="utf-8")
-    code_cells = sum(1 for c in CELLS if c["cell_type"] == "code")
-    print(f"wrote {OUT.relative_to(Path.cwd())} "
-          f"({len(CELLS)} cells, {code_cells} code, all parse)")
-    return 0
+    path = KAGGLE / name
+    path.write_text(json.dumps(notebook, indent=1), encoding="utf-8")
+    code_cells = sum(1 for c in cells if c["cell_type"] == "code")
+    print(f"wrote kaggle/{name} ({len(cells)} cells, {code_cells} code, all parse)")
+    return True
+
+
+def main():
+    ok = write(CELLS, "01_setup_and_data.ipynb")
+    ok = write(PREPROCESS_CELLS, "02_preprocess.ipynb") and ok
+    return 0 if ok else 1
 
 
 if __name__ == "__main__":

@@ -88,8 +88,13 @@ SOURCES = [
         "filename": "Model.csv",
         "url": "https://ndownloader.figshare.com/files/43746708",
         "approx_mb": 0.53,
-        "md5": "74ca5c14f118e445f1ad5a1a0335492e",
-        "note": "DepMap 23Q4 master cell-line table. ModelID indexes the "
+        "size_tolerance": (0.8, 4.0),
+        "columns": ["ModelID", "StrippedCellLineName"],
+        "note": "DepMap master cell-line table. ANY recent release works -- "
+                "ModelIDs are stable across releases and later tables carry "
+                "more aliases, so this is checked by columns rather than by "
+                "checksum (23Q4 is 0.53 MB, later releases ~0.7 MB). "
+                "ModelID indexes the "
                 "expression matrix and StrippedCellLineName matches NCI60 "
                 "names, so this is what links responses to expression. The "
                 "18Q3 Achilles sample_info covers only 485 screened lines and "
@@ -235,6 +240,16 @@ def _md5(path, chunk=1 << 20):
     return digest.hexdigest()
 
 
+def _columns_ok(path, required):
+    try:
+        with path.open(encoding="utf-8", errors="replace") as handle:
+            header = handle.readline()
+    except Exception:
+        return False
+    present = {name.strip().strip('"') for name in header.split(",")}
+    return all(name in present for name in required)
+
+
 def _zip_ok(path):
     """Does the archive's central directory parse?
 
@@ -265,7 +280,12 @@ def check(dest):
             size_mb = target.stat().st_size / 1e6
             ratio = size_mb / source["approx_mb"] if source["approx_mb"] else 1
             detail = f"{size_mb:8.1f} MB (expected ~{source['approx_mb']:.1f})"
-            if not 0.95 < ratio < 1.05:
+            low, high = source.get("size_tolerance", (0.95, 1.05))
+            if source.get("columns") and not _columns_ok(target, source["columns"]):
+                state = "WRONG COLUMNS"
+                detail += "  -- missing " + ", ".join(source["columns"])
+                missing.append(source)
+            elif not low < ratio < high:
                 state = "SUSPECT SIZE"
                 missing.append(source)
             elif target.suffix == ".zip" and not _zip_ok(target):
