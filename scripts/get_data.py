@@ -84,6 +84,18 @@ SOURCES = [
         "note": "DepMap Public 23Q4, log2(TPM+1) for protein-coding genes.",
     },
     {
+        "key": "depmap_model",
+        "filename": "Model.csv",
+        "url": "https://ndownloader.figshare.com/files/43746708",
+        "approx_mb": 0.53,
+        "md5": "74ca5c14f118e445f1ad5a1a0335492e",
+        "note": "DepMap 23Q4 master cell-line table. ModelID indexes the "
+                "expression matrix and StrippedCellLineName matches NCI60 "
+                "names, so this is what links responses to expression. The "
+                "18Q3 Achilles sample_info covers only 485 screened lines and "
+                "misses most of NCI60.",
+    },
+    {
         "key": "depmap_samples",
         "filename": "sample_info_18q3.csv",
         "url": "https://ndownloader.figshare.com/files/12704612",
