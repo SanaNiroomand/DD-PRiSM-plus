@@ -86,3 +86,17 @@ class CombinationTherapyModel(nn.Module):
             viability = torch.relu(viability)
 
         return coefficients, synergy, viability
+
+    @torch.no_grad()
+    def load_from_reference(self, ref):
+        """Copy weights from :class:`ReferenceCombinationTherapyModel`.
+
+        The three sub-networks are structurally identical to the published ones,
+        so this is a straight state_dict copy. It exists so the equivalence test
+        can show the two produce the same numbers rather than asking anyone to
+        take that on trust.
+        """
+        self.embedding_network.load_state_dict(ref.embedding_network.state_dict())
+        self.monotherapy_network.load_state_dict(ref.monotherapy_network.state_dict())
+        self.synergy_network.load_state_dict(ref.synergy_network.state_dict())
+        return self

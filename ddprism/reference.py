@@ -133,3 +133,97 @@ class ReferenceMonotherapyModel(nn.Module):
         if return_attention:
             return viability, sample_attention
         return viability
+
+
+class ReferenceCombinationTherapyModel(nn.Module):
+    """Verbatim port of ``CombinationTherapyModel`` from
+    00_CombinationtherapyUtils.ipynb.
+
+    Structure, layer order, variable names and forward signature are the
+    authors'. ``efficacy_relu`` and ``viability_relu`` are constructed and never
+    called, exactly as published -- that is why Supplementary Data 3 contains
+    negative viabilities. Do not tidy any of this: it is the baseline that
+    defines correct.
+    """
+
+    def __init__(self):
+        super().__init__()
+
+        self.num_pathway = 186
+
+        embedding_modules = []
+        embedding_modules.append(nn.Linear(self.num_pathway, self.num_pathway))
+        embedding_modules.append(nn.BatchNorm1d(self.num_pathway))
+        embedding_modules.append(nn.ReLU())
+        embedding_modules.append(nn.Tanh())
+        embedding_modules.append(nn.Softmax(dim=1))
+        self.embedding_network = nn.Sequential(*embedding_modules)
+
+        monotherapy_modules = []
+        monotherapy_modules.append(nn.Linear(self.num_pathway, 64))
+        monotherapy_modules.append(nn.BatchNorm1d(64))
+        monotherapy_modules.append(nn.ReLU())
+        monotherapy_modules.append(nn.Linear(64, 16))
+        monotherapy_modules.append(nn.BatchNorm1d(16))
+        monotherapy_modules.append(nn.ReLU())
+        monotherapy_modules.append(nn.Linear(16, 4))
+        monotherapy_modules.append(nn.BatchNorm1d(4))
+        monotherapy_modules.append(nn.ReLU())
+        monotherapy_modules.append(nn.Linear(4, 1))
+        self.monotherapy_network = nn.Sequential(*monotherapy_modules)
+
+        self.monotherapy_coefficient_network = nn.Softmax(dim=1)
+
+        synergy_modules = []
+        synergy_modules.append(nn.Linear(2 * self.num_pathway, 64))
+        synergy_modules.append(nn.BatchNorm1d(64))
+        synergy_modules.append(nn.ReLU())
+        synergy_modules.append(nn.Linear(64, 16))
+        synergy_modules.append(nn.BatchNorm1d(16))
+        synergy_modules.append(nn.ReLU())
+        synergy_modules.append(nn.Linear(16, 4))
+        synergy_modules.append(nn.BatchNorm1d(4))
+        synergy_modules.append(nn.ReLU())
+        synergy_modules.append(nn.Linear(4, 1))
+        self.synergy_network = nn.Sequential(*synergy_modules)
+
+        # Built by the original and never called in forward. Kept so state_dict
+        # keys line up with published checkpoints.
+        self.efficacy_relu = nn.ReLU()
+        self.viability_relu = nn.ReLU()
+
+    def forward(self, input_feature):
+        pathway_attention1 = input_feature[0]
+        pathway_attention2 = input_feature[1]
+        viability1 = input_feature[2]
+        viability2 = input_feature[3]
+
+        efficacy1 = torch.sub(1, viability1)
+        efficacy2 = torch.sub(1, viability2)
+
+        embedding2to1 = self.embedding_network(pathway_attention2)
+        embedding1to2 = self.embedding_network(pathway_attention1)
+
+        pathway1with2 = torch.multiply(pathway_attention1, embedding2to1)
+        pathway2with1 = torch.multiply(pathway_attention2, embedding1to2)
+
+        processed_pathway1 = self.monotherapy_network(pathway1with2)
+        processed_pathway2 = self.monotherapy_network(pathway2with1)
+
+        processed_pathways = torch.cat([processed_pathway1, processed_pathway2], dim=1)
+        efficacies = torch.cat([efficacy1, efficacy2], dim=1)
+        processed_pathways_with_efficacies = torch.multiply(processed_pathways, efficacies)
+        coefficient_mono = self.monotherapy_coefficient_network(processed_pathways_with_efficacies)
+        monotherapy_effect = batch_dot(coefficient_mono, efficacies)
+
+        pathway_attention1_effected = torch.mul(pathway_attention1, efficacy1)
+        pathway_attention2_effected = torch.mul(pathway_attention2, efficacy2)
+
+        pathway_concat = torch.cat([pathway_attention1_effected,
+                                    pathway_attention2_effected], dim=1)
+        synergy_effect = self.synergy_network(pathway_concat)
+
+        combination_efficacy = torch.add(monotherapy_effect, synergy_effect)
+        combination_viability = torch.sub(1, combination_efficacy)
+
+        return coefficient_mono, synergy_effect, combination_viability

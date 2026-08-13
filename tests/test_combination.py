@@ -126,3 +126,52 @@ def test_pearson_matches_a_known_value():
     x = torch.tensor([1.0, 2.0, 3.0, 4.0])
     assert pearson(x, x).item() == pytest.approx(1.0, abs=1e-6)
     assert pearson(x, -x).item() == pytest.approx(-1.0, abs=1e-6)
+
+
+# ------------------------------------------------- equivalence to the paper
+
+def _reference_pair(batch=24, dtype=torch.float64, seed=3):
+    from ddprism.reference import ReferenceCombinationTherapyModel
+    torch.manual_seed(seed)
+    reference = ReferenceCombinationTherapyModel().to(dtype)
+
+    # Give BatchNorm non-trivial running statistics so eval mode is exercised.
+    reference.train()
+    for _ in range(3):
+        reference(list(make_batch(batch=batch, dtype=dtype, seed=seed + 1)))
+
+    fast = CombinationTherapyModel().to(dtype).load_from_reference(reference)
+    return reference, fast
+
+
+@pytest.mark.parametrize("training", [False, True])
+def test_matches_published_combination_model(training):
+    """Same weights must give the same numbers as the authors' code."""
+    reference, fast = _reference_pair()
+    a1, a2, v1, v2 = make_batch(batch=24, seed=9)
+
+    reference.train(training)
+    fast.train(training)
+
+    ref_coef, ref_syn, ref_via = reference([a1, a2, v1, v2])
+    our_coef, our_syn, our_via = fast(a1, a2, v1, v2)
+
+    torch.testing.assert_close(our_coef, ref_coef, rtol=1e-10, atol=1e-10)
+    torch.testing.assert_close(our_syn, ref_syn, rtol=1e-10, atol=1e-10)
+    torch.testing.assert_close(our_via, ref_via, rtol=1e-10, atol=1e-10)
+
+
+def test_published_model_is_unbounded():
+    """The paper's own model can emit negative viability; ours reproduces that."""
+    from ddprism.reference import ReferenceCombinationTherapyModel
+    torch.manual_seed(0)
+    reference = ReferenceCombinationTherapyModel().double().eval()
+    with torch.no_grad():
+        reference.synergy_network[-1].bias.fill_(5.0)
+
+    _, _, viability = reference(list(make_batch(dtype=torch.float64)))
+    assert (viability < 0).any()
+
+    fast = CombinationTherapyModel().double().eval().load_from_reference(reference)
+    _, _, ours = fast(*make_batch(dtype=torch.float64))
+    torch.testing.assert_close(ours, viability, rtol=1e-10, atol=1e-10)
