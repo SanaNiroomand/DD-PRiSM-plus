@@ -215,6 +215,113 @@ md("## Save it",
 ]
 
 
+
+TRAIN_CELLS = [
+md("# DD-PRiSM-plus — Step 3: training",
+   "",
+   "**GPU session.** Accelerator → **GPU T4 x2**, Internet → **On**.",
+   "",
+   "**Attach step 2's output:** right panel → **Add Input → Your Work →**",
+   "**Notebook Output**, pick your `02_preprocess` version.",
+   "",
+   "Three stages run in order, all on the authors' own model classes from",
+   "`original/ddprism_original.py`:",
+   "",
+   "| stage | data | learning rate |",
+   "|---|---|---|",
+   "| pretrain | NCI60, ~8.9M rows | 1e-2 |",
+   "| finetune | ALMANAC monotherapy, 35k rows, only the 4 curve heads unfrozen | 1e-3 |",
+   "| combination | ALMANAC pairs, 1.98M rows | 1e-2 |",
+   "",
+   "> **This will not finish in one session.** Kaggle stops you at ~12 hours.",
+   "> Every epoch is checkpointed, so just Save Version, attach *this* notebook's",
+   "> output next time, and rerun — it resumes at the epoch it reached."),
+
+code("import os, glob",
+     "",
+     "REPO = '/kaggle/working/ddprism-plus'",
+     "RUNS = '/kaggle/working/runs'",
+     "",
+     "if os.path.exists(REPO):",
+     "    !cd {REPO} && git pull --quiet",
+     "else:",
+     "    !git clone --quiet https://github.com/SanaNiroomand/DD-PRiSM-plus.git {REPO}",
+     "os.chdir(REPO)",
+     "",
+     "hits = glob.glob('/kaggle/input/**/nci60_filtered.parquet', recursive=True)",
+     "if not hits:",
+     "    raise SystemExit('preprocessed data not found -- attach the output of '",
+     "                     '02_preprocess via Add Input.')",
+     "PROCESSED = os.path.dirname(hits[0])",
+     "",
+     "raw = glob.glob('/kaggle/input/**/DOSERESP.zip', recursive=True)",
+     "if not raw:",
+     "    raise SystemExit('raw data not found -- attach 01_setup_and_data too, '",
+     "                     'for the KEGG .gmt.')",
+     "DATA = os.path.dirname(raw[0])",
+     "",
+     "print('processed:', PROCESSED)",
+     "print('raw      :', DATA)"),
+
+md("## Resume from a previous session",
+   "",
+   "Copies any checkpoints from an earlier run of this notebook into place.",
+   "Does nothing on the first run."),
+
+code("import shutil",
+     "",
+     "os.makedirs(RUNS, exist_ok=True)",
+     "restored = 0",
+     "for found in glob.glob('/kaggle/input/**/runs/*/checkpoint.pt', recursive=True):",
+     "    stage = os.path.basename(os.path.dirname(found))",
+     "    os.makedirs(os.path.join(RUNS, stage), exist_ok=True)",
+     "    for name in ('checkpoint.pt', 'best.pt', 'history.json'):",
+     "        source = os.path.join(os.path.dirname(found), name)",
+     "        if os.path.exists(source):",
+     "            shutil.copy(source, os.path.join(RUNS, stage, name))",
+     "            restored += 1",
+     "print('restored', restored, 'checkpoint files')",
+     "!ls -R {RUNS} 2>/dev/null | head -20"),
+
+md("## Install and check"),
+
+code("!pip install --quiet zipfile-deflate64 pyarrow",
+     "!python -m pytest tests -q -x --ignore=tests/test_train.py"),
+
+md("## Train",
+   "",
+   "`--max-hours` stops cleanly and checkpoints before Kaggle pulls the plug.",
+   "Leave headroom for Save Version to finish."),
+
+code("ARGS = f'--data {DATA} --processed {PROCESSED} --out {RUNS}'",
+     "!python -m ddprism.train {ARGS} --batch-size 1024 --max-hours 10.5"),
+
+md("## Results so far"),
+
+code("import json",
+     "for stage in ('pretrain', 'finetune', 'combination'):",
+     "    path = os.path.join(RUNS, stage, 'history.json')",
+     "    if not os.path.exists(path):",
+     "        continue",
+     "    history = json.load(open(path))",
+     "    best = min(history, key=lambda h: h['val_loss'])",
+     "    print(f\"{stage:<12} {len(history):>3} epochs   best val {best['val_loss']:.5f}  \"",
+     "          f\"RMSE {best['val_rmse']:.4f}  PCC {best['val_pcc']:.4f}\")",
+     "print()",
+     "print('paper, unseen pair set:')",
+     "print('  pretrained  RMSE 0.0830  PCC 0.9387')",
+     "print('  fine-tuned  RMSE 0.0914  PCC 0.8791')",
+     "print('  combination RMSE 0.0854  PCC 0.9063')"),
+
+md("## Save",
+   "",
+   "**Save Version → Save & Run All (Commit).**",
+   "",
+   "If training stopped on the time budget rather than finishing, attach this",
+   "notebook's own output next session and rerun. It picks up mid-stage."),
+]
+
+
 def _as_python(source):
     """Make a notebook cell parseable as plain Python.
 
@@ -271,6 +378,7 @@ def write(cells, name):
 def main():
     ok = write(CELLS, "01_setup_and_data.ipynb")
     ok = write(PREPROCESS_CELLS, "02_preprocess.ipynb") and ok
+    ok = write(TRAIN_CELLS, "03_train.ipynb") and ok
     return 0 if ok else 1
 
 

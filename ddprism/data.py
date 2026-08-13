@@ -85,6 +85,33 @@ class MonotherapyTensorData:
         genes = [block[cell_rows] for block in self.expression]
         return genes, self.fingerprints[drug_rows].float()
 
+    def build_pathway_list(self, expression_by_cellline):
+        """Also keep one unpadded (cells, n_p) table per pathway.
+
+        The authors' MonotherapyModel takes ``gene_expression_list`` -- 186
+        separate tensors in pathway order -- while the vectorised model takes
+        the bucketed padded form. Holding both costs nothing (the whole table is
+        about 31 MB) and lets either model train from the same source.
+        """
+        self.per_pathway = []
+        for pathway in range(len(self.spec)):
+            width = self.spec.gene_counts[pathway]
+            block = torch.zeros(len(self.cell_ids), width, dtype=torch.float32)
+            for cell, name in enumerate(self.cell_ids):
+                values = torch.as_tensor(
+                    np.asarray(expression_by_cellline[name][pathway]),
+                    dtype=torch.float32)
+                block[cell, : values.numel()] = values
+            self.per_pathway.append(block.to(self.device))
+        return self
+
+    def gather_list(self, cell_rows, drug_rows):
+        """Inputs shaped for the authors' model: list of P tensors, (B, n_p)."""
+        if not hasattr(self, "per_pathway"):
+            raise RuntimeError("call build_pathway_list() first")
+        genes = [block[cell_rows] for block in self.per_pathway]
+        return genes, self.fingerprints[drug_rows].float()
+
 
 class MonotherapyBatches:
     """Minibatches drawn straight out of device memory -- no DataLoader.
@@ -96,12 +123,16 @@ class MonotherapyBatches:
     """
 
     def __init__(self, data, cell_ids, drug_ids, dose, viability,
-                 batch_size=1024, shuffle=True, drop_last=False, generator=None):
+                 batch_size=1024, shuffle=True, drop_last=False, generator=None,
+                 as_list=False):
         self.data = data
         self.batch_size = batch_size
         self.shuffle = shuffle
         self.drop_last = drop_last
         self.generator = generator
+        # as_list=True yields the authors' input format (186 separate tensors);
+        # False yields the bucketed padded form the vectorised model wants.
+        self.as_list = as_list
 
         device = data.device
         self.cell_rows = torch.as_tensor(
@@ -131,10 +162,11 @@ class MonotherapyBatches:
         else:
             order = torch.arange(count, device=self.data.device)
 
+        gather = self.data.gather_list if self.as_list else self.data.gather
         for start in range(0, count, self.batch_size):
             selected = order[start:start + self.batch_size]
             if self.drop_last and len(selected) < self.batch_size:
                 break
-            genes, fingerprints = self.data.gather(
-                self.cell_rows[selected], self.drug_rows[selected])
+            genes, fingerprints = gather(self.cell_rows[selected],
+                                         self.drug_rows[selected])
             yield (genes, fingerprints, self.dose[selected]), self.viability[selected]
