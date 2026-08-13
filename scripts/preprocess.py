@@ -25,6 +25,9 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from paper_sets import ALMANAC_CELL_LINES, ALMANAC_DRUGS  # noqa: E402
+
 try:                       # patches zipfile to handle DOSERESP's Deflate64
     import zipfile_deflate64  # noqa: F401
 except ImportError:
@@ -344,10 +347,12 @@ def stage_splits(out, seed=0):
 
 def stage_almanac(data, out):
     banner("NCI-ALMANAC")
-    nci60 = pd.read_parquet(out / "nci60_filtered.parquet")
-    fingerprints = pd.read_parquet(out / "fingerprints.parquet")
-    valid_nsc = set(fingerprints.index.astype(int))
-    valid_cells = set(nci60.CELLNAME.unique())
+    # Supplementary Data 1 names the exact 102 drugs and 44 cell lines. ALMANAC
+    # screened 61 cell lines, so deriving the set from what NCI60 kept pulls in
+    # 17 the paper excluded. Using the published lists reproduces all three
+    # counts exactly.
+    valid_nsc = set(ALMANAC_DRUGS)
+    valid_cells = set(ALMANAC_CELL_LINES)
 
     archive = zipfile.ZipFile(data / "ComboDrugGrowth_Nov2017.zip")
     with archive.open(archive.namelist()[0]) as handle:
@@ -355,6 +360,7 @@ def stage_almanac(data, out):
                                              "CELLNAME", "PERCENTGROWTH"],
                             low_memory=False)
     report("ALMANAC rows", len(frame))
+    report("paper drugs / cell lines", len(valid_nsc) + len(valid_cells), 146)
 
     frame["VIABILITY"] = (frame.PERCENTGROWTH + 100) / 200
     frame = frame[frame.VIABILITY < 1.5]
