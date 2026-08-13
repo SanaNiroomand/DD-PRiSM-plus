@@ -131,7 +131,7 @@ def test_pearson_matches_a_known_value():
 # ------------------------------------------------- equivalence to the paper
 
 def _reference_pair(batch=24, dtype=torch.float64, seed=3):
-    from ddprism.reference import ReferenceCombinationTherapyModel
+    from original.ddprism_original import CombinationTherapyModel as ReferenceCombinationTherapyModel
     torch.manual_seed(seed)
     reference = ReferenceCombinationTherapyModel().to(dtype)
 
@@ -163,7 +163,7 @@ def test_matches_published_combination_model(training):
 
 def test_published_model_is_unbounded():
     """The paper's own model can emit negative viability; ours reproduces that."""
-    from ddprism.reference import ReferenceCombinationTherapyModel
+    from original.ddprism_original import CombinationTherapyModel as ReferenceCombinationTherapyModel
     torch.manual_seed(0)
     reference = ReferenceCombinationTherapyModel().double().eval()
     with torch.no_grad():

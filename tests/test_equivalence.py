@@ -13,7 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from ddprism.monotherapy import MonotherapyModel
 from ddprism.pathways import synthetic_gene_set
-from ddprism.reference import ReferenceMonotherapyModel
+from original.ddprism_original import MonotherapyModel as ReferenceMonotherapyModel
 
 BUCKET_COUNTS = [1, 4, 16, 24]
 
@@ -61,14 +61,26 @@ def test_viability_matches_reference(num_buckets, training):
 
 @pytest.mark.parametrize("num_buckets", BUCKET_COUNTS)
 def test_pathway_attention_matches_reference(num_buckets):
-    """The hook output the Combination model consumes must also match."""
+    """The pathway attention the Combination model consumes must also match.
+
+    The authors' forward returns viability only; they recover the attention by
+    registering a forward hook on ``sample_attention_block`` and reading its
+    output. That hook is what this compares against -- our ``return_attention``
+    is a convenience, and it has to agree with their mechanism exactly.
+    """
+    from original.ddprism_original import Hook
+
     reference, fast, gene_set = build_pair(num_buckets=num_buckets)
     per_pathway, drug_fp, dose = make_batch(gene_set, batch_size=32)
 
     reference.eval()
     fast.eval()
 
-    _, expected = reference([per_pathway, drug_fp, dose], return_attention=True)
+    hook = Hook(reference.sample_attention_block)
+    reference([per_pathway, drug_fp, dose])
+    expected = hook.o
+    hook.close()
+
     _, actual = fast(fast.pack(per_pathway), drug_fp, dose, return_attention=True)
 
     torch.testing.assert_close(actual, expected, rtol=1e-9, atol=1e-9)

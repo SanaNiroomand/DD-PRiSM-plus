@@ -20,7 +20,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from ddprism.monotherapy import MonotherapyModel
 from ddprism.pathways import synthetic_gene_set
-from ddprism.reference import ReferenceMonotherapyModel
+from original.ddprism_original import MonotherapyModel as ReferenceMonotherapyModel
 
 
 def report_environment(device):

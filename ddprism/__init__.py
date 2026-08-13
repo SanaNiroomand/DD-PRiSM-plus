@@ -9,7 +9,7 @@ from .data import MonotherapyBatches, MonotherapyTensorData
 from .losses import CustomLoss, estimate_density, pearson, rmse
 from .monotherapy import MonotherapyModel
 from .pathways import PathwaySpec, read_gmt, synthetic_gene_set
-from .reference import ReferenceMonotherapyModel
+
 
 __all__ = [
     "CombinationTherapyModel",
@@ -18,7 +18,6 @@ __all__ = [
     "MonotherapyModel",
     "MonotherapyTensorData",
     "PathwaySpec",
-    "ReferenceMonotherapyModel",
     "estimate_density",
     "pearson",
     "read_gmt",
