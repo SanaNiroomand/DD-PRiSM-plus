@@ -33,12 +33,33 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from ddprism.data import MonotherapyBatches, MonotherapyTensorData
 from ddprism.losses import CustomLoss, estimate_density, pearson, rmse
+from ddprism.monotherapy import MonotherapyModel as VectorisedMonotherapyModel
 from ddprism.pathways import PathwaySpec, read_gmt
 from original.ddprism_original import (  # the authors' classes, unmodified
     CombinationTherapyModel,
     Hook,
     MonotherapyModel,
 )
+
+
+def build_monotherapy(gene_set, kind, num_buckets, device):
+    """Either the authors' model or the vectorised one, which is the same maths.
+
+    'original' loops over 186 pathways exactly as published. 'fast' evaluates
+    them as batched ops; the test suite pins it to the published model at 1e-10,
+    and gpu_check confirmed 1.3e-15 on a T4.
+
+    The difference is only speed, but at this scale speed decides feasibility:
+    on a T4 an NCI60 epoch is 31.5 minutes the original way and 6.0 minutes
+    vectorised, so a 30-hour quota buys 57 epochs or 300.
+    """
+    if kind == "original":
+        model = MonotherapyModel(gene_set).to(device)
+        forward = lambda genes, fp, dose: model([genes, fp, dose])
+        return model, forward, True
+    model = VectorisedMonotherapyModel(gene_set, num_buckets=num_buckets).to(device)
+    forward = lambda genes, fp, dose: model(genes, fp, dose)
+    return model, forward, False
 
 THRESHOLD = 0.0005      # "did not decrease by more than a threshold value"
 LR_PATIENCE = 10
@@ -197,13 +218,13 @@ class Run:
 # monotherapy stages
 # --------------------------------------------------------------------------
 
-def run_monotherapy_epoch(model, batches, loss_fn, optimizer=None):
+def run_monotherapy_epoch(model, forward, batches, loss_fn, optimizer=None):
     training = optimizer is not None
     model.train(training)
     totals, predictions, actuals = [], [], []
 
     for (genes, fingerprints, dose), target in batches:
-        prediction = model([genes, fingerprints, dose])
+        prediction = forward(genes, fingerprints, dose)
         loss, _, _ = loss_fn(prediction, target)
         if training:
             optimizer.zero_grad(set_to_none=True)
@@ -220,7 +241,7 @@ def run_monotherapy_epoch(model, batches, loss_fn, optimizer=None):
             pearson(predicted, observed).item())
 
 
-def train_monotherapy(model, train_batches, validation_batches, loss_fn,
+def train_monotherapy(model, forward, train_batches, validation_batches, loss_fn,
                       directory, lr, max_epochs, deadline, stage):
     optimizer = torch.optim.AdamW(
         [p for p in model.parameters() if p.requires_grad], lr=lr)
@@ -231,10 +252,10 @@ def train_monotherapy(model, train_batches, validation_batches, loss_fn,
         run.epoch += 1
         started = time.time()
         train_loss, train_rmse, train_pcc = run_monotherapy_epoch(
-            model, train_batches, loss_fn, optimizer)
+            model, forward, train_batches, loss_fn, optimizer)
         with torch.no_grad():
             val_loss, val_rmse, val_pcc = run_monotherapy_epoch(
-                model, validation_batches, loss_fn)
+                model, forward, validation_batches, loss_fn)
 
         improved, should_stop = run.observe(val_loss)
         run.history.append({"epoch": run.epoch, "train_loss": train_loss,
@@ -283,7 +304,8 @@ def freeze_for_finetuning(model):
 # --------------------------------------------------------------------------
 
 @torch.no_grad()
-def extract_monotherapy_outputs(model, data, frame, device, batch_size=4096):
+def extract_monotherapy_outputs(model, forward, data, frame, device,
+                                as_list=True, batch_size=4096):
     """Pathway attention and predicted viability for each (cell, drug, dose).
 
     The authors' forward returns viability only; the attention is recovered with
@@ -303,9 +325,9 @@ def extract_monotherapy_outputs(model, data, frame, device, batch_size=4096):
     attentions, viabilities = [], []
     for start in range(0, len(frame), batch_size):
         stop = start + batch_size
-        genes, fingerprints = data.gather_list(cell_rows[start:stop],
-                                               drug_rows[start:stop])
-        viability = model([genes, fingerprints, dose[start:stop]])
+        gather = data.gather_list if as_list else data.gather
+        genes, fingerprints = gather(cell_rows[start:stop], drug_rows[start:stop])
+        viability = forward(genes, fingerprints, dose[start:stop])
         attentions.append(hook.o.detach())
         viabilities.append(viability.detach())
 
@@ -369,6 +391,12 @@ def main():
     parser.add_argument("--max-epochs", type=int, default=200)
     parser.add_argument("--max-hours", type=float, default=10.5,
                         help="stop cleanly before Kaggle kills the session")
+    parser.add_argument("--model", choices=["original", "fast"], default="original",
+                        help="'original' is the authors' loop over 186 pathways; "
+                             "'fast' is the same maths batched, pinned to it at "
+                             "1e-10 by the tests. On a T4 an NCI60 epoch takes "
+                             "31.5 min vs 6.0 min, so a 30-hour quota buys 57 "
+                             "epochs or 300.")
     parser.add_argument("--buckets", type=int, default=8)
     parser.add_argument("--seed", type=int, default=0)
     args = parser.parse_args()
@@ -384,7 +412,10 @@ def main():
     stages = (["pretrain", "finetune", "combination"]
               if args.stage == "all" else [args.stage])
 
-    model = MonotherapyModel(gene_set).to(device)
+    model, forward, as_list = build_monotherapy(gene_set, args.model,
+                                                args.buckets, device)
+    parameters = sum(p.numel() for p in model.parameters())
+    print(f"  model        : {args.model} ({parameters:,} parameters)")
 
     if "pretrain" in stages:
         banner("stage 1/3  pretrain on NCI60")
@@ -395,7 +426,6 @@ def main():
         density = estimate_density(train_frame.VIABILITY.to_numpy())
         loss_fn = CustomLoss(density).to(device)
 
-        as_list = True
         train_batches = MonotherapyBatches(
             data, train_frame.CELLNAME, train_frame.NSC, train_frame.CONCENTRATION,
             train_frame.VIABILITY, batch_size=args.batch_size, as_list=as_list)
@@ -405,7 +435,7 @@ def main():
             as_list=as_list)
 
         run, finished = train_monotherapy(
-            model, train_batches, val_batches, loss_fn,
+            model, forward, train_batches, val_batches, loss_fn,
             args.out / "pretrain", 1e-2, args.max_epochs, deadline, "pretrain")
         if not finished:
             return 0
@@ -429,14 +459,14 @@ def main():
 
         train_batches = MonotherapyBatches(
             data, train_frame.CELLNAME, train_frame.NSC, train_frame.CONCENTRATION,
-            train_frame.VIABILITY, batch_size=args.batch_size, as_list=True)
+            train_frame.VIABILITY, batch_size=args.batch_size, as_list=as_list)
         val_batches = MonotherapyBatches(
             data, val_frame.CELLNAME, val_frame.NSC, val_frame.CONCENTRATION,
             val_frame.VIABILITY, batch_size=args.batch_size, shuffle=False,
-            as_list=True)
+            as_list=as_list)
 
         run, finished = train_monotherapy(
-            model, train_batches, val_batches, loss_fn,
+            model, forward, train_batches, val_batches, loss_fn,
             args.out / "finetune", 1e-3, args.max_epochs, deadline, "finetune")
         if not finished:
             return 0
@@ -457,8 +487,10 @@ def main():
                               "CONCENTRATION": combo.CONCENTRATION1})
         second = pd.DataFrame({"CELLNAME": combo.CELLNAME, "NSC": combo.NSC2,
                                "CONCENTRATION": combo.CONCENTRATION2})
-        attention1, viability1 = extract_monotherapy_outputs(model, data, first, device)
-        attention2, viability2 = extract_monotherapy_outputs(model, data, second, device)
+        attention1, viability1 = extract_monotherapy_outputs(
+            model, forward, data, first, device, as_list)
+        attention2, viability2 = extract_monotherapy_outputs(
+            model, forward, data, second, device, as_list)
         target = torch.as_tensor(combo.VIABILITY.to_numpy(np.float32),
                                  device=device).view(-1, 1)
 

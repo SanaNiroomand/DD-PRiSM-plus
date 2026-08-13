@@ -90,9 +90,12 @@ def train(raw, processed, out, extra=()):
     return subprocess.run(command, cwd=ROOT, capture_output=True, text=True)
 
 
-def test_all_three_stages_run(tiny, tmp_path):
+@pytest.mark.parametrize("model", ["original", "fast"])
+def test_all_three_stages_run(tiny, tmp_path, model):
+    """Both model paths must carry the full pipeline, not just the default."""
     raw, processed = tiny
-    result = train(raw, processed, tmp_path / "runs", ("--max-epochs", "2"))
+    result = train(raw, processed, tmp_path / "runs",
+                   ("--max-epochs", "2", "--model", model))
     assert result.returncode == 0, result.stdout + result.stderr
 
     for stage in ("pretrain", "finetune", "combination"):
