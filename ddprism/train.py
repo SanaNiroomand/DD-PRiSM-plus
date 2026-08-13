@@ -90,6 +90,17 @@ def load_gene_sets(gmt_path, valid_genes):
 def build_data(processed, gmt_path, device, num_buckets=8, require_186=True):
     expression = pd.read_parquet(processed / "expression_zscore.parquet")
     fingerprints = pd.read_parquet(processed / "fingerprints.parquet")
+
+    # The expression matrix is indexed by DepMap ModelID (ACH-...) while every
+    # response table keys on the NCI60 name ("786-0"). Re-key here, and drop the
+    # 1,400-odd DepMap lines this study never touches: building pathway tensors
+    # for all of them costs 246 MB and 90 seconds for no benefit.
+    pairs = pd.read_parquet(processed / "nci60_filtered.parquet",
+                            columns=["CELLNAME", "depmap_id"]).drop_duplicates()
+    pairs = pairs[pairs.depmap_id.isin(expression.index)]
+    expression = expression.loc[pairs.depmap_id.to_numpy()]
+    expression.index = pd.Index(pairs.CELLNAME.to_numpy(), name="CELLNAME")
+
     gene_set = load_gene_sets(gmt_path, expression.columns)
 
     # The authors' CombinationTherapyModel takes no arguments and hardcodes
@@ -107,7 +118,7 @@ def build_data(processed, gmt_path, device, num_buckets=8, require_186=True):
 
     print(f"  pathways     : {len(spec)}")
     print(f"  genes kept   : {sum(spec.gene_counts):,}")
-    print(f"  cell lines   : {len(expression):,}")
+    print(f"  cell lines   : {len(expression):,}  (keyed by NCI60 name)")
     print(f"  fingerprints : {len(fingerprints):,}")
 
     by_cellline = {

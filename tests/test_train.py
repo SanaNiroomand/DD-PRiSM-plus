@@ -51,9 +51,20 @@ def tiny(tmp_path_factory):
     (raw / "c2.cp.kegg_legacy.v2023.2.Hs.symbols.gmt").write_text(
         "\n".join(lines) + "\n", encoding="utf-8")
 
+    # Expression is indexed by DepMap ModelID, not by cell-line name -- exactly
+    # as the real matrix is. Training rows key on CELLNAME, so the pipeline has
+    # to re-key via nci60_filtered. An earlier fixture used names on both sides
+    # and let a KeyError reach Kaggle.
+    model_ids = [f"ACH-{i:06d}" for i in range(len(cells))]
     pd.DataFrame(rng.standard_normal((len(cells), len(genes))).astype(np.float32),
-                 index=cells, columns=genes).to_parquet(
+                 index=model_ids, columns=genes).to_parquet(
         processed / "expression_zscore.parquet")
+
+    pd.DataFrame({"CELLNAME": cells, "depmap_id": model_ids,
+                  "NSC": drugs[:len(cells)],
+                  "CONCENTRATION": np.zeros(len(cells), np.float32),
+                  "VIABILITY": np.full(len(cells), 0.5, np.float32)}
+                 ).to_parquet(processed / "nci60_filtered.parquet")
 
     fingerprints = pd.DataFrame(
         rng.integers(0, 2, (len(drugs), 512)).astype(np.uint8),
