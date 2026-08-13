@@ -68,27 +68,54 @@ def report(label, value, expected=None):
 # stage: fingerprints
 # --------------------------------------------------------------------------
 
-def stage_fingerprints(data, out):
-    banner("Morgan fingerprints")
+def stage_fingerprints(data, out, source="chem2d"):
+    """512-bit Morgan fingerprints, radius 2.
+
+    Which compound file you start from decides the size of the whole dataset,
+    so this defaults to the paper's route.
+
+      chem2d      Chem2D_Jun2016.sdf, what the authors parsed. Covers 52,076 of
+                  the 57,041 NSCs tested in NCI60.
+      nsc_smiles  nsc_smiles.csv, simpler but *more* complete -- it covers all
+                  57,041, which inflates every downstream count by about 11%
+                  and puts the drug total at ~56,160 against the paper's 50,893.
+    """
+    banner(f"Morgan fingerprints (source: {source})")
     from rdkit import Chem, RDLogger
     from rdkit.Chem import AllChem
     RDLogger.DisableLog("rdApp.*")
 
-    smiles = pd.read_csv(data / "nsc_smiles.csv")
-    report("SMILES records", len(smiles))
+    bits, kept, seen = [], [], 0
 
-    bits, kept = [], []
-    for nsc, smi in zip(smiles.NSC.values, smiles.SMILES.values):
-        mol = Chem.MolFromSmiles(smi) if isinstance(smi, str) else None
-        if mol is None:
-            continue
-        bits.append(AllChem.GetMorganFingerprintAsBitVect(mol, 2, nBits=512))
-        kept.append(nsc)
+    if source == "chem2d":
+        archive = zipfile.ZipFile(data / "Chem2D_Jun2016.zip")
+        with archive.open(archive.namelist()[0]) as handle:
+            for mol in Chem.ForwardSDMolSupplier(handle):
+                seen += 1
+                if mol is None:
+                    continue
+                try:
+                    nsc = int(mol.GetProp("_Name"))
+                except (KeyError, ValueError):
+                    continue
+                bits.append(AllChem.GetMorganFingerprintAsBitVect(mol, 2, nBits=512))
+                kept.append(nsc)
+    else:
+        smiles = pd.read_csv(data / "nsc_smiles.csv")
+        seen = len(smiles)
+        for nsc, smi in zip(smiles.NSC.values, smiles.SMILES.values):
+            mol = Chem.MolFromSmiles(smi) if isinstance(smi, str) else None
+            if mol is None:
+                continue
+            bits.append(AllChem.GetMorganFingerprintAsBitVect(mol, 2, nBits=512))
+            kept.append(int(nsc))
 
+    report("compound records", seen)
     frame = pd.DataFrame(np.array(bits, dtype=np.uint8), index=pd.Index(kept, name="NSC"))
+    frame = frame[~frame.index.duplicated(keep="first")]
     frame.columns = [str(c) for c in frame.columns]
-    report("parsed by RDKit", len(frame))
-    report("unparseable, dropped", len(smiles) - len(frame))
+    report("fingerprints produced", len(frame))
+    report("unusable, dropped", seen - len(frame))
 
     out.mkdir(parents=True, exist_ok=True)
     frame.to_parquet(out / "fingerprints.parquet")
@@ -368,13 +395,17 @@ def main():
     parser.add_argument("--out", type=Path, default=Path("processed"))
     parser.add_argument("--stage", choices=STAGES + ["all"], default="all")
     parser.add_argument("--chunksize", type=int, default=2_000_000)
+    parser.add_argument("--fingerprint-source", choices=["chem2d", "nsc_smiles"],
+                        default="chem2d",
+                        help="chem2d matches the paper; nsc_smiles is more "
+                             "complete and inflates every count by ~11%")
     args = parser.parse_args()
 
     wanted = STAGES if args.stage == "all" else [args.stage]
     args.out.mkdir(parents=True, exist_ok=True)
 
     if "fingerprints" in wanted:
-        stage_fingerprints(args.data, args.out)
+        stage_fingerprints(args.data, args.out, args.fingerprint_source)
     if "expression" in wanted:
         stage_expression(args.data, args.out)
     if "nci60" in wanted:
