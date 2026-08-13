@@ -170,3 +170,40 @@ def test_gradients_flow_to_pathway_parameters():
     for block in fast.pathway_blocks:
         assert block.attention_linear.weight.grad.abs().sum() > 0
         assert block.drug_linear.weight.grad.abs().sum() > 0
+
+
+SHARED_BLOCKS = ("drug_block", "new_drug_block", "drug_dense_sample_block",
+                 "sample_attention_block", "concatenated_block", "final_block",
+                 "final_y_max", "final_y_min", "final_slope", "final_IC50")
+
+
+def test_gradients_match_the_published_model():
+    """Equal outputs are not enough -- training is driven by gradients.
+
+    A model can agree on the forward pass and still learn differently if the
+    backward pass differs, so this compares the gradients themselves. Measured
+    agreement is around 5e-16 in float64, i.e. machine precision.
+    """
+    reference, fast, gene_set = build_pair(num_buckets=4)
+    reference.train()
+    fast.train()
+
+    per_pathway, drug_fp, dose = make_batch(gene_set, batch_size=32)
+    target = torch.rand(32, 1, dtype=torch.float64)
+
+    reference.zero_grad()
+    ((reference([per_pathway, drug_fp, dose]) - target) ** 2).mean().backward()
+    fast.zero_grad()
+    ((fast(fast.pack(per_pathway), drug_fp, dose) - target) ** 2).mean().backward()
+
+    compared = 0
+    for name in SHARED_BLOCKS:
+        theirs = dict(getattr(reference, name).named_parameters())
+        ours = dict(getattr(fast, name).named_parameters())
+        for key, parameter in theirs.items():
+            if parameter.grad is None:
+                continue
+            torch.testing.assert_close(ours[key].grad, parameter.grad,
+                                       rtol=1e-9, atol=1e-9)
+            compared += 1
+    assert compared >= 40, f"only {compared} gradient tensors were compared"
