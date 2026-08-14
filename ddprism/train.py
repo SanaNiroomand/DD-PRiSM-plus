@@ -406,8 +406,11 @@ def main():
     parser.add_argument("--data", type=Path, required=True,
                         help="raw directory, for the KEGG .gmt")
     parser.add_argument("--out", type=Path, default=Path("runs"))
-    parser.add_argument("--stage", default="all",
-                        choices=["all", "pretrain", "finetune", "combination"])
+    parser.add_argument("--stage", nargs="+", default=["all"],
+                        choices=["all", "pretrain", "finetune", "combination"],
+                        help="one or more stages, in order; 'all' means the "
+                             "three of them. Naming a subset lets a rerun skip "
+                             "work that is already correct.")
     parser.add_argument("--batch-size", type=int, default=1024)
     parser.add_argument("--max-epochs", type=int, default=200)
     parser.add_argument("--max-hours", type=float, default=10.5,
@@ -431,7 +434,8 @@ def main():
     data, gene_set, spec = build_data(args.processed, gmt, device, args.buckets)
 
     stages = (["pretrain", "finetune", "combination"]
-              if args.stage == "all" else [args.stage])
+              if "all" in args.stage else list(args.stage))
+    print(f"  stages       : {', '.join(stages)}")
 
     model, forward, as_list = build_monotherapy(gene_set, args.model,
                                                 args.buckets, device)
