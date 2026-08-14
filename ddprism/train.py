@@ -393,6 +393,23 @@ def run_combination_epoch(model, tensors, loss_fn, batch_size,
 # CLI
 # --------------------------------------------------------------------------
 
+def require_split(processed, folder, name):
+    """Load a held-out split, refusing to fall back to the unsplit table.
+
+    Training on almanac_mono.parquet or almanac_combo.parquet uses everything,
+    including the rows the paper holds out, so the resulting scores cannot be
+    compared with the published ones.
+    """
+    path = processed / folder / f"{name}.parquet"
+    if not path.exists():
+        raise SystemExit(
+            f"missing {path}. "
+            "Run: python scripts/preprocess.py --stage almanac_splits . "
+            "Without it, fine-tuning and the combination model would train on "
+            "the paper's test sets and their metrics would be meaningless.")
+    return pd.read_parquet(path)
+
+
 def split_trainval(frame, fraction=1 / 9, seed=0):
     """The paper splits its training-validation pool 8:1."""
     generator = np.random.default_rng(seed)
@@ -474,7 +491,7 @@ def main():
             print(f"  loaded pretrained weights from {best}")
         freeze_for_finetuning(model)
 
-        frame = pd.read_parquet(args.processed / "almanac_mono.parquet")
+        frame = require_split(args.processed, "almanac_mono_splits", "trainval")
         frame = frame.rename(columns={"NSC1": "NSC"})
         train_frame, val_frame = split_trainval(frame, seed=args.seed)
         print(f"  train {len(train_frame):,}   validation {len(val_frame):,}")
@@ -504,8 +521,8 @@ def main():
                                              weights_only=False)["model"])
             print(f"  loaded fine-tuned weights from {best}")
 
-        combo = pd.read_parquet(args.processed / "almanac_combo.parquet")
-        print(f"  combination rows: {len(combo):,}")
+        combo = require_split(args.processed, "almanac_combo_splits", "trainval")
+        print(f"  combination rows: {len(combo):,}  (trainval only)")
 
         print("  extracting pathway attention from the frozen Monotherapy model")
         first = pd.DataFrame({"CELLNAME": combo.CELLNAME, "NSC": combo.NSC1,

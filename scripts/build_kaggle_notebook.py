@@ -201,6 +201,10 @@ md("## Run preprocessing",
 
 code("!python scripts/preprocess.py --data {DATA} --out {OUT}"),
 
+md("The `almanac_splits` stage above builds the held-out sets Tables S3 and S4",
+   "describe. Training refuses to run without them, because the unsplit tables",
+   "contain the very rows the paper scores on."),
+
 md("## What came out"),
 
 code("!ls -la {OUT} && du -sh {OUT}"),
@@ -347,6 +351,17 @@ code("import json",
      "print('  pretrained  RMSE 0.0830  PCC 0.9387')",
      "print('  fine-tuned  RMSE 0.0914  PCC 0.8791')",
      "print('  combination RMSE 0.0854  PCC 0.9063')"),
+
+md("## Score on the held-out sets -- the numbers to quote",
+   "",
+   "Training reports on a random slice of its own pool, which splits individual",
+   "measurements: the same drug on the same cell line can be in training at one",
+   "dose and validation at another. The paper's figures hold out whole entities.",
+   "This scores the trained models on those, so the comparison is like for like.",
+   "",
+   "No training, one forward pass per split."),
+
+code("!python -m ddprism.evaluate --data {DATA} --processed {PROCESSED} --runs {RUNS}"),
 
 md("## Save",
    "",

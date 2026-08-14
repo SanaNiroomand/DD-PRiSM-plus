@@ -392,7 +392,101 @@ def stage_almanac(data, out):
     return mono, combo
 
 
-STAGES = ["fingerprints", "expression", "nci60", "splits", "almanac"]
+# --------------------------------------------------------------------------
+# stage: almanac splits
+# --------------------------------------------------------------------------
+
+def held_out_entities(counts, factor_test=None):
+    """Every Nth entity by descending row count, as the authors' notebook does."""
+    if factor_test is None:
+        factor_test = 1 - (1 - 0.05) ** 0.5
+    stride = int(len(counts) / (factor_test * len(counts)))
+    return set(counts.iloc[np.arange(0, len(counts), stride)].index)
+
+
+def stage_almanac_splits(out, seed=0):
+    """Split ALMANAC the way Tables S3 and S4 describe.
+
+    Without this the fine-tune and combination stages train on everything and
+    are scored on a random slice of it, so their numbers cannot be compared with
+    the paper's -- those are measured on entities held out entirely.
+
+    Combination rows are labelled by how much of them is unseen: the cell line,
+    one drug, both drugs, or a cell line together with a drug.
+    """
+    banner("NCI-ALMANAC splits")
+
+    mono = pd.read_parquet(out / "almanac_mono.parquet")
+    combo = pd.read_parquet(out / "almanac_combo.parquet")
+
+    cells = combo.groupby("CELLNAME", observed=True).VIABILITY.count().sort_values(ascending=False)
+    drugs = pd.concat([combo.NSC1, combo.NSC2]).value_counts()
+    unseen_cells = held_out_entities(cells)
+    unseen_drugs = held_out_entities(drugs)
+    report("unseen cell lines", len(unseen_cells), 2)
+    report("unseen drugs", len(unseen_drugs), 3)
+
+    # --- monotherapy (Table S3 shape) -------------------------------------
+    cell_out = mono.CELLNAME.isin(unseen_cells)
+    drug_out = mono.NSC.isin(unseen_drugs)
+    mono_splits = {
+        "unseen_all": mono[cell_out & drug_out],
+        "unseen_drug": mono[drug_out & ~cell_out],
+        "unseen_cellline": mono[cell_out & ~drug_out],
+    }
+    seen = mono[~cell_out & ~drug_out]
+    pairs = seen[["CELLNAME", "NSC"]].drop_duplicates()
+    holdout = pairs.sample(frac=1 / 18, random_state=seed)
+    is_holdout = pd.MultiIndex.from_frame(seen[["CELLNAME", "NSC"]]).isin(
+        pd.MultiIndex.from_frame(holdout))
+    mono_splits["unseen_pair"] = seen[is_holdout]
+    mono_splits["trainval"] = seen[~is_holdout]
+
+    print()
+    print("  monotherapy")
+    for name, part in mono_splits.items():
+        report("    " + name, len(part))
+
+    # --- combination (Table S4 shape) -------------------------------------
+    cell_out = combo.CELLNAME.isin(unseen_cells)
+    drugs_out = combo.NSC1.isin(unseen_drugs).astype(int) + combo.NSC2.isin(unseen_drugs).astype(int)
+
+    combo_splits = {
+        "unseen_all": combo[cell_out & (drugs_out > 0)],
+        "unseen_two_drug": combo[~cell_out & (drugs_out == 2)],
+        "unseen_one_drug": combo[~cell_out & (drugs_out == 1)],
+        "unseen_cellline": combo[cell_out & (drugs_out == 0)],
+    }
+    seen = combo[~cell_out & (drugs_out == 0)]
+    keys = ["CELLNAME", "NSC1", "NSC2"]
+    triples = seen[keys].drop_duplicates()
+    holdout = triples.sample(frac=1 / 9, random_state=seed)
+    is_holdout = pd.MultiIndex.from_frame(seen[keys]).isin(
+        pd.MultiIndex.from_frame(holdout))
+    combo_splits["unseen_pair"] = seen[is_holdout]
+    combo_splits["trainval"] = seen[~is_holdout]
+
+    expected = {"trainval": 1_387_317 + 198_189, "unseen_pair": 197_934,
+                "unseen_cellline": 84_865, "unseen_one_drug": 111_732,
+                "unseen_two_drug": 1_044, "unseen_all": 54}
+    print()
+    print("  combination")
+    for name, part in combo_splits.items():
+        report("    " + name, len(part), expected.get(name))
+    report("    total", sum(len(p) for p in combo_splits.values()), 1_981_135)
+
+    for label, splits in (("almanac_mono_splits", mono_splits),
+                          ("almanac_combo_splits", combo_splits)):
+        directory = out / label
+        directory.mkdir(parents=True, exist_ok=True)
+        for name, part in splits.items():
+            part.to_parquet(directory / f"{name}.parquet")
+        print(f"  -> {directory}")
+    return mono_splits, combo_splits
+
+
+STAGES = ["fingerprints", "expression", "nci60", "splits", "almanac",
+          "almanac_splits"]
 
 
 def main():
@@ -420,6 +514,8 @@ def main():
         stage_splits(args.out)
     if "almanac" in wanted:
         stage_almanac(args.data, args.out)
+    if "almanac_splits" in wanted:
+        stage_almanac_splits(args.out)
 
     banner("done")
     for item in sorted(args.out.rglob("*.parquet")):

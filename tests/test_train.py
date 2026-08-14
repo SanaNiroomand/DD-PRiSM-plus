@@ -9,6 +9,7 @@ a nicety; if it is broken, every run starts from scratch.
 Run with:  python -m pytest tests/test_train.py -v
 """
 
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -83,14 +84,31 @@ def tiny(tmp_path_factory):
     responses(256).to_parquet(processed / "nci60_splits" / "trainval.parquet")
     responses(192).to_parquet(processed / "almanac_mono.parquet")
 
-    pd.DataFrame({
-        "CELLNAME": rng.choice(cells, 192),
-        "NSC1": rng.choice(drugs, 192),
-        "NSC2": rng.choice(drugs, 192),
-        "CONCENTRATION1": rng.uniform(-2, 1, 192).astype(np.float32),
-        "CONCENTRATION2": rng.uniform(-2, 1, 192).astype(np.float32),
-        "VIABILITY": rng.uniform(0, 1.2, 192).astype(np.float32),
-    }).to_parquet(processed / "almanac_combo.parquet")
+    def combinations(n):
+        return pd.DataFrame({
+            "CELLNAME": rng.choice(cells, n),
+            "NSC1": rng.choice(drugs, n),
+            "NSC2": rng.choice(drugs, n),
+            "CONCENTRATION1": rng.uniform(-2, 1, n).astype(np.float32),
+            "CONCENTRATION2": rng.uniform(-2, 1, n).astype(np.float32),
+            "VIABILITY": rng.uniform(0, 1.2, n).astype(np.float32)})
+
+    combinations(192).to_parquet(processed / "almanac_combo.parquet")
+
+    # Training refuses the unsplit tables, because using them would include the
+    # paper's held-out rows. Provide the splits the real pipeline builds.
+    mono_dir = processed / "almanac_mono_splits"
+    combo_dir = processed / "almanac_combo_splits"
+    mono_dir.mkdir(parents=True, exist_ok=True)
+    combo_dir.mkdir(parents=True, exist_ok=True)
+    for name in ("trainval", "unseen_pair", "unseen_cellline", "unseen_drug",
+                 "unseen_all"):
+        responses(160 if name == "trainval" else 48).to_parquet(
+            mono_dir / f"{name}.parquet")
+    for name in ("trainval", "unseen_pair", "unseen_cellline", "unseen_one_drug",
+                 "unseen_two_drug", "unseen_all"):
+        combinations(160 if name == "trainval" else 48).to_parquet(
+            combo_dir / f"{name}.parquet")
 
     return raw, processed
 
@@ -220,3 +238,44 @@ def test_split_is_deterministic_and_disjoint():
     assert not set(a1.index) & set(b1.index)
     assert list(a1.index) == list(a2.index)
     assert 0.06 < len(b1) / len(frame) < 0.17     # nominally 1/9
+
+
+# ------------------------------------------------------------- evaluation
+
+def test_training_refuses_the_unsplit_almanac_tables(tiny, tmp_path):
+    """Training on almanac_*.parquet would include the paper's test rows."""
+    raw, processed = tiny
+    hidden = processed / "almanac_mono_splits" / "trainval.parquet"
+    stashed = hidden.with_suffix(".hidden")
+    hidden.rename(stashed)
+    try:
+        result = train(raw, processed, tmp_path / "runs",
+                       ("--stage", "finetune", "--max-epochs", "1"))
+        assert result.returncode != 0
+        assert "almanac_mono_splits" in result.stdout + result.stderr
+    finally:
+        stashed.rename(hidden)
+
+
+def test_evaluate_scores_every_held_out_split(tiny, tmp_path):
+    """A full pass: train, then score on splits the model never saw."""
+    raw, processed = tiny
+    out = tmp_path / "runs"
+
+    trained = train(raw, processed, out, ("--max-epochs", "1"))
+    assert trained.returncode == 0, trained.stdout + trained.stderr
+
+    scored = subprocess.run(
+        [sys.executable, "-m", "ddprism.evaluate", "--data", str(raw),
+         "--processed", str(processed), "--runs", str(out)],
+        cwd=ROOT, capture_output=True, text=True)
+    assert scored.returncode == 0, scored.stdout + scored.stderr
+
+    assert "unseen_pair" in scored.stdout
+    assert "headline" in scored.stdout
+    results = json.loads((out / "evaluation.json").read_text())
+    assert {"pretrain", "finetune", "combination"} <= set(results)
+    for stage, splits in results.items():
+        for split, values in splits.items():
+            assert values["n"] > 0
+            assert 0.0 <= values["rmse"] < 5.0, f"{stage}/{split} rmse implausible"
