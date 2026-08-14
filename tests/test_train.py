@@ -21,7 +21,8 @@ import torch
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from ddprism.train import CURVE_HEADS, Run, freeze_for_finetuning, split_trainval
+from ddprism.train import (CURVE_HEADS, FINETUNE_TRAINABLE, Run,
+                          freeze_for_finetuning, split_trainval)
 from original.ddprism_original import MonotherapyModel
 
 
@@ -146,17 +147,36 @@ def test_checkpoint_carries_optimizer_and_schedule_state(tiny, tmp_path):
     assert state["optimizer"]["state"], "optimiser moments were not saved"
 
 
-def test_finetuning_unfreezes_only_the_curve_heads(tiny):
+def test_finetuning_unfreezes_the_curve_prediction_network(tiny):
+    """Figure S3B: frozen up to pathway attention, trainable from the concat on.
+
+    Unfreezing only the four Linear(2, 1) heads leaves 12 parameters, which is
+    far too few to absorb the NCI60 -> ALMANAC shift; that reading produced
+    RMSE 0.1426 / PCC 0.699 against the paper's 0.0914 / 0.8791.
+    """
     _, processed = tiny
     gene_set = {f"P{i}": [f"g{i}_{j}" for j in range(6)] for i in range(8)}
     model = freeze_for_finetuning(MonotherapyModel(gene_set))
 
-    trainable = {name for name, p in model.named_parameters() if p.requires_grad}
-    assert trainable, "nothing is trainable"
-    for name in trainable:
-        assert name.split(".")[0] in CURVE_HEADS, f"{name} should be frozen"
-    # All four heads participate.
-    assert {n.split(".")[0] for n in trainable} == set(CURVE_HEADS)
+    trainable = {name.split(".")[0]
+                 for name, p in model.named_parameters() if p.requires_grad}
+    assert trainable == set(FINETUNE_TRAINABLE)
+
+    # Everything feeding the pathway attention must stay frozen.
+    for name, parameter in model.named_parameters():
+        if name.split(".")[0] in ("drug_block", "new_drug_block",
+                                  "drug_gene_set_blocks", "gene_attention_blocks",
+                                  "sample_attention_block"):
+            assert not parameter.requires_grad, f"{name} should be frozen"
+
+    # The four Linear(2, 1) heads are 12 parameters between them. Whatever the
+    # pathway count, the curve prediction network has to contribute far more
+    # than that, or fine-tuning cannot absorb a dataset shift.
+    heads_only = sum(p.numel() for name in CURVE_HEADS
+                     for p in getattr(model, name).parameters())
+    count = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    assert heads_only == 12
+    assert count > 100 * heads_only, f"only {count} trainable -- too few to adapt"
 
 
 def test_schedule_matches_the_paper():

@@ -9,7 +9,8 @@ Three stages, in order:
 
   pretrain     MonotherapyModel on NCI60 (~8.9M rows)
   finetune     the same weights on NCI-ALMANAC monotherapy (35k rows), with
-               everything frozen except the four curve-parameter heads
+               everything up to the pathway attention frozen and the curve
+               prediction network trainable, as drawn in Figure S3B
   combination  extract each drug's pathway attention and predicted viability
                from the frozen model, then train CombinationTherapyModel on
                ALMANAC pairs
@@ -65,6 +66,9 @@ THRESHOLD = 0.0005      # "did not decrease by more than a threshold value"
 LR_PATIENCE = 10
 STOP_PATIENCE = 20
 CURVE_HEADS = ("final_y_max", "final_y_min", "final_slope", "final_IC50")
+# Everything from the concat of latent drug feature + pathway activity onward,
+# i.e. the "Curve prediction network" shaded orange in Figure S3B.
+FINETUNE_TRAINABLE = ("concatenated_block", "final_block") + CURVE_HEADS
 
 
 def banner(text):
@@ -290,17 +294,23 @@ def train_monotherapy(model, forward, train_batches, validation_batches, loss_fn
 
 
 def freeze_for_finetuning(model):
-    """Unfreeze only the four curve-parameter heads.
+    """Unfreeze the curve prediction network; freeze everything before it.
 
-    The paper: "we froze most model parameters to preserve the model's ability
-    to infer cancer-drug interactions through biological pathways. Only the
-    final layers that predict the four parameters of the response curve were
-    unfrozen, allowing adjustment for batch effects between datasets."
+    Figure S3B draws the boundary explicitly. Frozen (blue, snowflake): the
+    drug network, the gene-level network, and the attention that produces the
+    186-dim pathway activity. Trainable (orange, flame): everything from the
+    concatenation of latent drug feature and pathway activity onward -- the
+    "Curve prediction network" and the four parameters it emits.
+
+    Reading "only the final layers that predict the four parameters" as the
+    four Linear(2, 1) heads alone leaves 12 trainable parameters, and 12 is not
+    enough to absorb a dataset shift: fine-tuning then lands at RMSE 0.1426 /
+    PCC 0.699 against the paper's 0.0914 / 0.8791.
     """
     for parameter in model.parameters():
         parameter.requires_grad = False
-    for head in CURVE_HEADS:
-        for parameter in getattr(model, head).parameters():
+    for name in FINETUNE_TRAINABLE:
+        for parameter in getattr(model, name).parameters():
             parameter.requires_grad = True
 
     trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)

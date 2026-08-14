@@ -309,8 +309,9 @@ md("## Choose the model, then train",
    "`--max-hours` stops cleanly and checkpoints before Kaggle pulls the plug."),
 
 code("MODEL = 'fast'      # 'original' for the authors' loop, 'fast' for the same maths batched",
+     "STAGE = 'all'       # 'finetune' or 'combination' to redo one stage only",
      "",
-     "ARGS = f'--data {DATA} --processed {PROCESSED} --out {RUNS} --model {MODEL}'",
+     "ARGS = f'--data {DATA} --processed {PROCESSED} --out {RUNS} --model {MODEL} --stage {STAGE}'",
      "!python -m ddprism.train {ARGS} --batch-size 1024 --max-hours 10.5"),
 
 md("## Results so far"),
