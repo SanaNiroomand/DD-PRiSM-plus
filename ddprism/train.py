@@ -33,6 +33,8 @@ import torch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from ddprism.data import MonotherapyBatches, MonotherapyTensorData
+from ddprism.drugfeatures import (describe as describe_drug_features,
+                                  load_drug_features, used_drug_ids)
 from ddprism.losses import CustomLoss, estimate_density, pearson, rmse
 from ddprism.monotherapy import MonotherapyModel as VectorisedMonotherapyModel
 from ddprism.pathways import PathwaySpec, read_gmt
@@ -43,7 +45,29 @@ from original.ddprism_original import (  # the authors' classes, unmodified
 )
 
 
-def build_monotherapy(gene_set, kind, num_buckets, device):
+def adapt_drug_input(model, drug_dim):
+    """Widen the two drug branches to accept a longer feature vector.
+
+    ``original/ddprism_original.py`` is the authors' file, byte for byte, and
+    stays that way: it hardcodes ``Linear(512, ...)`` because the paper's drug
+    representation is a 512-bit fingerprint. Rather than edit it, the two input
+    layers are replaced after construction.
+
+    This is deliberately the *only* architectural change when the drug features
+    change. Every later layer keeps its published width, so a difference in the
+    results is attributable to the representation and not to a bigger network.
+    """
+    if drug_dim == model.drug_block[0].in_features:
+        return model
+
+    device = model.drug_block[0].weight.device
+    for block, width in ((model.drug_block, 256), (model.new_drug_block, 128)):
+        block[0] = torch.nn.Linear(drug_dim, width).to(device)
+    model.drug_dim = drug_dim
+    return model
+
+
+def build_monotherapy(gene_set, kind, num_buckets, device, drug_dim=512):
     """Either the authors' model or the vectorised one, which is the same maths.
 
     'original' loops over 186 pathways exactly as published. 'fast' evaluates
@@ -55,12 +79,60 @@ def build_monotherapy(gene_set, kind, num_buckets, device):
     vectorised, so a 30-hour quota buys 57 epochs or 300.
     """
     if kind == "original":
-        model = MonotherapyModel(gene_set).to(device)
+        model = adapt_drug_input(MonotherapyModel(gene_set).to(device), drug_dim)
         forward = lambda genes, fp, dose: model([genes, fp, dose])
         return model, forward, True
-    model = VectorisedMonotherapyModel(gene_set, num_buckets=num_buckets).to(device)
+    model = VectorisedMonotherapyModel(gene_set, num_buckets=num_buckets,
+                                       drug_dim=drug_dim).to(device)
     forward = lambda genes, fp, dose: model(genes, fp, dose)
     return model, forward, False
+
+
+@torch.no_grad()
+def warm_start(model, checkpoint, device):
+    """Load a checkpoint trained on narrower drug features.
+
+    A 512-column ``drug_block`` cannot be loaded into an 896-column one, so the
+    fingerprint columns are copied into place and the embedding columns start at
+    zero: at step zero the network computes exactly what the old one did, and
+    the new features have to earn their weight from there.
+
+    This exists because of the budget. Pretraining on NCI60 from scratch costs
+    about six GPU-hours; warm-starting reaches a comparable place in a fraction
+    of that, which is the difference between testing one idea and testing three.
+    A warm-started run is not a from-scratch run and should be reported as what
+    it is.
+    """
+    state = torch.load(checkpoint, map_location=device, weights_only=False)
+    state = state["model"] if "model" in state else state
+    current = model.state_dict()
+
+    copied, padded, skipped = 0, [], []
+    for name, value in state.items():
+        if name not in current:
+            skipped.append(name)
+            continue
+        target = current[name]
+        if target.shape == value.shape:
+            target.copy_(value)
+            copied += 1
+        elif (target.dim() == value.dim() == 2
+              and target.shape[0] == value.shape[0]
+              and target.shape[1] > value.shape[1]):
+            target.zero_()
+            target[:, : value.shape[1]].copy_(value)
+            padded.append(f"{name} {tuple(value.shape)} -> {tuple(target.shape)}")
+        else:
+            skipped.append(f"{name} {tuple(value.shape)} vs {tuple(target.shape)}")
+
+    model.load_state_dict(current)
+    print(f"  warm start from {checkpoint}")
+    print(f"    copied {copied} tensors")
+    for line in padded:
+        print(f"    zero-padded {line}")
+    for line in skipped:
+        print(f"    SKIPPED {line}")
+    return model
 
 THRESHOLD = 0.0005      # "did not decrease by more than a threshold value"
 LR_PATIENCE = 10
@@ -91,9 +163,16 @@ def load_gene_sets(gmt_path, valid_genes):
     return restricted
 
 
-def build_data(processed, gmt_path, device, num_buckets=8, require_186=True):
+def build_data(processed, gmt_path, device, num_buckets=8, require_186=True,
+               drug_features="morgan", standardize=True):
     expression = pd.read_parquet(processed / "expression_zscore.parquet")
-    fingerprints = pd.read_parquet(processed / "fingerprints.parquet")
+
+    # Chem2D holds 281,264 compounds; this study touches about 51,000. Keeping
+    # the rest is free for uint8 fingerprints and expensive once each drug
+    # carries a float embedding, so the table is cut to what is actually used.
+    drug_ids, drug_matrix, feature_report = load_drug_features(
+        processed, drug_features, restrict=used_drug_ids(processed),
+        standardize=standardize)
 
     # The expression matrix is indexed by DepMap ModelID (ACH-...) while every
     # response table keys on the NCI60 name ("786-0"). Re-key here, and drop the
@@ -123,14 +202,16 @@ def build_data(processed, gmt_path, device, num_buckets=8, require_186=True):
     print(f"  pathways     : {len(spec)}")
     print(f"  genes kept   : {sum(spec.gene_counts):,}")
     print(f"  cell lines   : {len(expression):,}  (keyed by NCI60 name)")
-    print(f"  fingerprints : {len(fingerprints):,}")
+    print(describe_drug_features(feature_report))
 
     by_cellline = {
         cell: [expression.loc[cell, gene_set[name]].to_numpy(dtype=np.float32)
                for name in spec.names]
         for cell in expression.index
     }
-    data = MonotherapyTensorData(spec, by_cellline, fingerprints, device=device)
+    data = MonotherapyTensorData(spec, by_cellline, drug_matrix,
+                                 drug_ids=[int(d) for d in drug_ids],
+                                 device=device)
     data.build_pathway_list(by_cellline)
     print(f"  {data.describe()}")
     return data, gene_set, spec
@@ -440,6 +521,18 @@ def main():
                              "epochs or 300.")
     parser.add_argument("--buckets", type=int, default=8)
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--drug-features", default="morgan",
+                        help="'+'-joined drug feature sources. 'morgan' is the "
+                             "paper's 512-bit fingerprint; 'chemberta' and "
+                             "'molformer' are pretrained embeddings built by "
+                             "scripts/embed_drugs.py; 'morgan+chemberta' "
+                             "concatenates them.")
+    parser.add_argument("--no-standardize", action="store_true",
+                        help="feed embeddings at their native scale instead of "
+                             "z-scoring each dimension across the drug library")
+    parser.add_argument("--init-from", type=Path, default=None,
+                        help="warm-start from a checkpoint trained on narrower "
+                             "drug features; new input columns start at zero")
     args = parser.parse_args()
 
     torch.manual_seed(args.seed)
@@ -448,16 +541,36 @@ def main():
 
     banner(f"inputs  (device: {device})")
     gmt = next(args.data.glob("*kegg_legacy*.gmt"))
-    data, gene_set, spec = build_data(args.processed, gmt, device, args.buckets)
+    data, gene_set, spec = build_data(
+        args.processed, gmt, device, args.buckets,
+        drug_features=args.drug_features,
+        standardize=not args.no_standardize)
 
     stages = (["pretrain", "finetune", "combination"]
               if "all" in args.stage else list(args.stage))
     print(f"  stages       : {', '.join(stages)}")
 
     model, forward, as_list = build_monotherapy(gene_set, args.model,
-                                                args.buckets, device)
+                                                args.buckets, device,
+                                                drug_dim=data.drug_dim)
     parameters = sum(p.numel() for p in model.parameters())
-    print(f"  model        : {args.model} ({parameters:,} parameters)")
+    print(f"  model        : {args.model} ({parameters:,} parameters, "
+          f"drug input {data.drug_dim})")
+    if args.init_from:
+        warm_start(model, args.init_from, device)
+
+    # Runs differing only in drug features produce identically-shaped output,
+    # so record what made this one, next to the checkpoints it writes.
+    args.out.mkdir(parents=True, exist_ok=True)
+    (args.out / "config.json").write_text(json.dumps({
+        "drug_features": args.drug_features,
+        "drug_dim": int(data.drug_dim),
+        "standardize": not args.no_standardize,
+        "model": args.model,
+        "buckets": args.buckets,
+        "seed": args.seed,
+        "init_from": str(args.init_from) if args.init_from else None,
+    }, indent=1), encoding="utf-8")
 
     if "pretrain" in stages:
         banner("stage 1/3  pretrain on NCI60")

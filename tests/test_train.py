@@ -74,6 +74,15 @@ def tiny(tmp_path_factory):
     fingerprints.columns = [str(c) for c in fingerprints.columns]
     fingerprints.to_parquet(processed / "fingerprints.parquet")
 
+    # Stand-in for scripts/embed_drugs.py output. Narrow (24 dims, not 384) so
+    # the pipeline test stays quick; what it exercises is the plumbing, not the
+    # chemistry.
+    embeddings = pd.DataFrame(
+        (rng.standard_normal((len(drugs), 24)) * 5 + 30).astype(np.float32),
+        index=pd.Index(drugs, name="NSC"))
+    embeddings.columns = [f"e{i}" for i in range(24)]
+    embeddings.to_parquet(processed / "drug_embeddings_chemberta.parquet")
+
     def responses(n):
         return pd.DataFrame({
             "CELLNAME": rng.choice(cells, n),
@@ -132,6 +141,68 @@ def test_all_three_stages_run(tiny, tmp_path, model):
         assert (tmp_path / "runs" / stage / "best.pt").exists(), f"{stage} produced no best.pt"
         assert (tmp_path / "runs" / stage / "checkpoint.pt").exists()
     assert "stage 3/3" in result.stdout
+
+
+@pytest.mark.parametrize("features", ["chemberta", "morgan+chemberta"])
+def test_pretrained_embeddings_carry_the_whole_pipeline(tiny, tmp_path, features):
+    """All three stages, then evaluation, on a fused drug representation."""
+    raw, processed = tiny
+    out = tmp_path / "runs"
+    result = train(raw, processed, out,
+                   ("--max-epochs", "1", "--model", "fast",
+                    "--drug-features", features))
+    assert result.returncode == 0, result.stdout + result.stderr
+
+    expected = {"chemberta": 24, "morgan+chemberta": 536}[features]
+    assert f"drug input {expected}" in result.stdout
+
+    config = json.loads((out / "config.json").read_text())
+    assert config["drug_features"] == features
+    assert config["drug_dim"] == expected
+
+    # Evaluation must reconstruct the same representation without being told.
+    scored = subprocess.run(
+        [sys.executable, "-m", "ddprism.evaluate", "--data", str(raw),
+         "--processed", str(processed), "--runs", str(out)],
+        cwd=ROOT, capture_output=True, text=True)
+    assert scored.returncode == 0, scored.stdout + scored.stderr
+    assert "unseen_pair" in scored.stdout
+
+
+def test_evaluating_with_the_wrong_features_is_refused(tiny, tmp_path):
+    """Scoring an 896-wide checkpoint on 512-wide input must not quietly work."""
+    raw, processed = tiny
+    out = tmp_path / "runs"
+    trained = train(raw, processed, out,
+                    ("--stage", "pretrain", "--max-epochs", "1", "--model", "fast",
+                     "--drug-features", "morgan+chemberta"))
+    assert trained.returncode == 0, trained.stdout + trained.stderr
+
+    scored = subprocess.run(
+        [sys.executable, "-m", "ddprism.evaluate", "--data", str(raw),
+         "--processed", str(processed), "--runs", str(out),
+         "--drug-features", "morgan"],
+        cwd=ROOT, capture_output=True, text=True)
+    assert scored.returncode != 0
+    assert "trained with a 536-wide drug input" in scored.stdout + scored.stderr
+
+
+def test_warm_start_carries_a_morgan_checkpoint_into_a_fused_model(tiny, tmp_path):
+    """The budget path: reuse Morgan pretraining instead of redoing it."""
+    raw, processed = tiny
+    baseline = tmp_path / "morgan"
+    first = train(raw, processed, baseline,
+                  ("--stage", "pretrain", "--max-epochs", "1", "--model", "fast"))
+    assert first.returncode == 0, first.stdout + first.stderr
+
+    fused = train(raw, processed, tmp_path / "fused",
+                  ("--stage", "pretrain", "--max-epochs", "1", "--model", "fast",
+                   "--drug-features", "morgan+chemberta",
+                   "--init-from", str(baseline / "pretrain" / "best.pt")))
+    assert fused.returncode == 0, fused.stdout + fused.stderr
+    assert "warm start from" in fused.stdout
+    assert "zero-padded drug_block.0.weight (256, 512) -> (256, 536)" in fused.stdout
+    assert "SKIPPED" not in fused.stdout
 
 
 def test_resume_continues_instead_of_restarting(tiny, tmp_path):

@@ -59,22 +59,28 @@ class MonotherapyModel(nn.Module):
             reference implementation takes.
         num_buckets: pathways are sorted by size and split into this many
             buckets, each padded to its own widest member.
+        drug_dim: width of the drug feature vector. 512 is the paper's Morgan
+            fingerprint; a larger value comes from concatenating a pretrained
+            chemical language model embedding. Only the first Linear of each
+            drug branch changes -- everything downstream is untouched, so the
+            comparison isolates the representation.
 
     Forward takes ``gene_expression`` as the per-bucket list produced by
     :meth:`pack`.
     """
 
-    def __init__(self, gene_set, num_buckets=16):
+    def __init__(self, gene_set, num_buckets=16, drug_dim=512):
         super().__init__()
         self.spec = PathwaySpec(gene_set, num_buckets=num_buckets)
         self.num_pathway = self.spec.num_pathways
+        self.drug_dim = drug_dim
 
         self.drug_block = nn.Sequential(
-            nn.Linear(512, 256), nn.BatchNorm1d(256), nn.ReLU(),
+            nn.Linear(drug_dim, 256), nn.BatchNorm1d(256), nn.ReLU(),
             nn.Linear(256, 128), nn.BatchNorm1d(128), nn.ReLU(),
         )
         self.new_drug_block = nn.Sequential(
-            nn.Linear(512, 128), nn.BatchNorm1d(128), nn.ReLU(),
+            nn.Linear(drug_dim, 128), nn.BatchNorm1d(128), nn.ReLU(),
             nn.Linear(128, 32), nn.BatchNorm1d(32), nn.ReLU(),
         )
 

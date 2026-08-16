@@ -6,6 +6,7 @@ Reference code:  https://github.com/GIST-CSBL/DD-PRiSM
 
 from .combination import CombinationTherapyModel
 from .data import MonotherapyBatches, MonotherapyTensorData
+from .drugfeatures import load_drug_features, parse_spec, used_drug_ids
 from .losses import CustomLoss, estimate_density, pearson, rmse
 from .monotherapy import MonotherapyModel
 from .pathways import PathwaySpec, read_gmt, synthetic_gene_set
@@ -19,8 +20,11 @@ __all__ = [
     "MonotherapyTensorData",
     "PathwaySpec",
     "estimate_density",
+    "load_drug_features",
+    "parse_spec",
     "pearson",
     "read_gmt",
     "rmse",
     "synthetic_gene_set",
+    "used_drug_ids",
 ]

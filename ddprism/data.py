@@ -40,9 +40,12 @@ class MonotherapyTensorData:
             with. Bucket layout must match or the gathers will be misaligned.
         expression_by_cellline: mapping cell line -> sequence of P arrays, in
             the same pathway order as ``spec.names``.
-        fingerprints: DataFrame indexed by drug id, a dict, or an array plus
-            ``drug_ids``. Stored as uint8 and cast per batch; 512-bit Morgan
-            fingerprints are binary, so this costs nothing and saves 4x memory.
+        fingerprints: the drug feature table -- a DataFrame indexed by drug id,
+            a dict, or an array plus ``drug_ids``. A binary array (Morgan
+            fingerprints) is held as uint8 and cast per batch, which costs
+            nothing and saves 4x memory; a float array (a pretrained embedding,
+            or Morgan fused with one) is held as float32, because rounding the
+            model's only view of a molecule to save memory is a bad trade.
     """
 
     def __init__(self, spec, expression_by_cellline, fingerprints,
@@ -66,10 +69,13 @@ class MonotherapyTensorData:
                     block[cell, local, : values.numel()] = values
             self.expression.append(block.to(self.device))
 
-        self.drug_ids, fingerprint_array = _index_and_values(fingerprints, drug_ids)
+        self.drug_ids, feature_array = _index_and_values(fingerprints, drug_ids)
         self.drug_index = {name: i for i, name in enumerate(self.drug_ids)}
+        integral = feature_array.dtype.kind in "biu"
         self.fingerprints = torch.as_tensor(
-            fingerprint_array, dtype=torch.uint8).to(self.device)
+            feature_array,
+            dtype=torch.uint8 if integral else torch.float32).to(self.device)
+        self.drug_dim = self.fingerprints.shape[1]
 
     @property
     def nbytes(self):
@@ -78,8 +84,8 @@ class MonotherapyTensorData:
 
     def describe(self):
         return (f"{len(self.cell_ids)} cell lines x {len(self.spec)} pathways, "
-                f"{len(self.drug_ids):,} drugs, {self.nbytes / 1e6:.0f} MB on "
-                f"{self.device}")
+                f"{len(self.drug_ids):,} drugs x {self.drug_dim} features, "
+                f"{self.nbytes / 1e6:.0f} MB on {self.device}")
 
     def gather(self, cell_rows, drug_rows):
         genes = [block[cell_rows] for block in self.expression]

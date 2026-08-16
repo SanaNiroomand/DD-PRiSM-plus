@@ -61,6 +61,31 @@ def show(stage, split, result):
     print(line, flush=True)
 
 
+def run_config(runs):
+    """What training recorded about this run, if it recorded anything.
+
+    Runs written before --drug-features existed have no config.json; those are
+    Morgan runs by definition.
+    """
+    path = runs / "config.json"
+    if not path.exists():
+        return {}
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def checkpoint_drug_dim(path):
+    """Width of the drug input this checkpoint was trained with.
+
+    Reading it off the weights rather than trusting a flag: scoring a
+    morgan+chemberta checkpoint with Morgan features alone would either raise a
+    shape error or, worse, quietly succeed on a rebuilt input layer and report
+    numbers for a model nobody trained.
+    """
+    state = torch.load(path, map_location="cpu", weights_only=False)
+    weight = state["model"]["drug_block.0.weight"]
+    return weight.shape[1]
+
+
 def checkpoint_model_kind(path):
     """Which Monotherapy model wrote this checkpoint.
 
@@ -125,25 +150,44 @@ def main():
                         default="auto",
                         help="'auto' reads the kind off the checkpoint")
     parser.add_argument("--buckets", type=int, default=8)
+    parser.add_argument("--drug-features", default=None,
+                        help="defaults to whatever the run's config.json says, "
+                             "falling back to 'morgan'")
     parser.add_argument("--out", type=Path, default=None)
     args = parser.parse_args()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    anchor = next((args.runs / s / "best.pt" for s in ("finetune", "pretrain")
+                   if (args.runs / s / "best.pt").exists()), None)
+    if anchor is None:
+        raise SystemExit(f"no checkpoints under {args.runs} to evaluate")
+
+    config = run_config(args.runs)
+    features = args.drug_features or config.get("drug_features", "morgan")
+
     banner(f"inputs  (device: {device})")
-    gmt = next(args.data.glob("*kegg_legacy*.gmt"))
-    data, gene_set, spec = build_data(args.processed, gmt, device, args.buckets)
+    data, gene_set, spec = build_data(
+        args.processed, next(args.data.glob("*kegg_legacy*.gmt")), device,
+        args.buckets, drug_features=features,
+        standardize=config.get("standardize", True))
+
+    # The checkpoint is the authority on how wide the drug input has to be.
+    expected = checkpoint_drug_dim(anchor)
+    if expected != data.drug_dim:
+        raise SystemExit(
+            f"{anchor} was trained with a {expected}-wide drug input, but "
+            f"'{features}' builds {data.drug_dim}.\n"
+            f"  Pass --drug-features to match the run, or point --runs at the "
+            f"run that produced these checkpoints.")
 
     kind = args.model
     if kind == "auto":
-        anchor = next((args.runs / s / "best.pt" for s in ("finetune", "pretrain")
-                       if (args.runs / s / "best.pt").exists()), None)
-        if anchor is None:
-            raise SystemExit(f"no checkpoints under {args.runs} to evaluate")
         kind = checkpoint_model_kind(anchor)
     print(f"  model        : {kind} (from checkpoint)")
 
-    model, forward, as_list = build_monotherapy(gene_set, kind,
-                                                args.buckets, device)
+    model, forward, as_list = build_monotherapy(gene_set, kind, args.buckets,
+                                                device, drug_dim=data.drug_dim)
     results = {}
 
     for stage, folder, splits in (
