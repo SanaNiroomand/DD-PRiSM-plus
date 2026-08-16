@@ -205,6 +205,26 @@ md("The `almanac_splits` stage above builds the held-out sets Tables S3 and S4",
    "describe. Training refuses to run without them, because the unsplit tables",
    "contain the very rows the paper scores on."),
 
+md("## Pretrained drug embeddings",
+   "",
+   "The paper describes a drug as a 512-bit Morgan fingerprint and names the",
+   "consequence itself: *\"we need more informative drug features for the",
+   "phenotypic prediction.\"* Our held-out numbers agree — the unseen-drug split",
+   "scores PCC 0.7585 against 0.9386 on unseen pairs.",
+   "",
+   "This embeds every drug with ChemBERTa, a transformer pretrained on 77M",
+   "PubChem molecules, so training can use `morgan+chemberta`.",
+   "",
+   "**Needs Internet → On** (right panel) to download the model, ~15 MB. It runs",
+   "on CPU in roughly 20 minutes — no GPU quota spent.",
+   "",
+   "**Order matters:** run this *after* preprocessing. It reads the response",
+   "tables to embed only the ~51k drugs the study touches, instead of all",
+   "281,264 compounds in Chem2D."),
+
+code("!pip install --quiet transformers",
+     "!python scripts/embed_drugs.py --data {DATA} --out {OUT} --model chemberta"),
+
 md("## What came out"),
 
 code("!ls -la {OUT} && du -sh {OUT}"),
@@ -220,13 +240,101 @@ md("## Save it",
 
 
 
-TRAIN_CELLS = [
-md("# DD-PRiSM-plus — Step 3: training",
+# --------------------------------------------------------------------------
+# training notebooks -- one per experiment
+# --------------------------------------------------------------------------
+#
+# Each experiment is its own notebook, so each is its own Kaggle notebook with
+# its own version history, its own saved output and its own checkpoints. That
+# keeps the runs genuinely independent: nothing one experiment does can reach
+# into another's directory, and a rerun of one never disturbs another. The
+# comparison happens afterwards, in 06_compare, from the saved outputs.
+
+EXPERIMENTS = [
+    {
+        "file": "03_train.ipynb",
+        "features": "morgan",
+        "runs": "/kaggle/working/runs",
+        "title": "Step 3: train the paper's model",
+        "what": "The published representation: a **512-bit Morgan fingerprint**, "
+                "radius 2. This is the baseline every other experiment is "
+                "measured against, and it is the run that reproduces the paper.",
+        "expect": "Reproduces the published numbers. On the unseen pair set we "
+                  "measured RMSE 0.0828 / PCC 0.9386 against the paper's "
+                  "0.0830 / 0.9387.",
+        "needs_embeddings": False,
+    },
+    {
+        "file": "04_experiment_fusion.ipynb",
+        "features": "morgan+chemberta",
+        "runs": "/kaggle/working/runs-morgan-chemberta",
+        "title": "Experiment 1: Morgan + ChemBERTa",
+        "what": "The fingerprint **concatenated with a 384-dim ChemBERTa "
+                "embedding** -- 896 inputs in total. ChemBERTa is a transformer "
+                "pretrained on 77M PubChem molecules, so it brings chemistry a "
+                "bag of substructures cannot express.",
+        "expect": "The number to watch is **unseen_drug**. The baseline scores "
+                  "RMSE 0.1604 / PCC 0.7585 there, against 0.0828 / 0.9386 on "
+                  "unseen pairs -- new drugs are where the fingerprint fails, and "
+                  "the only place a richer representation has obvious room to "
+                  "help. Expect unseen_cellline and unseen_pair to barely move; "
+                  "they are already above 0.93 and are not limited by this.",
+        "needs_embeddings": True,
+    },
+    {
+        "file": "05_experiment_chemberta.ipynb",
+        "features": "chemberta",
+        "runs": "/kaggle/working/runs-chemberta",
+        "title": "Experiment 2: ChemBERTa alone",
+        "what": "The embedding **without** the fingerprint -- 384 inputs. This is "
+                "the control, and it is the one that makes the result "
+                "defensible.",
+        "expect": "Fusion adds 147,456 parameters (+5.7%) over the paper's model, "
+                  "so a sceptic can always say a win came from the extra "
+                  "capacity. This model has **49,152 fewer** parameters than the "
+                  "paper's. If it also beats the baseline, capacity is not the "
+                  "explanation and the representation is. Run it after the fusion "
+                  "experiment.",
+        "needs_embeddings": True,
+    },
+]
+
+
+def train_cells(experiment):
+    """Cells for one experiment's notebook.
+
+    Every experiment gets the same machinery -- the differences are the feature
+    spec, the run directory, and what the markdown says to look at.
+    """
+    features = experiment["features"]
+    runs = experiment["runs"]
+    folder = runs.rsplit("/", 1)[-1]
+
+    embeddings_note = ([
+        "",
+        "**Requires** `drug_embeddings_chemberta.parquet` from `02_preprocess`. If",
+        "that file is missing, training stops immediately and tells you which",
+        "command builds it -- it does not quietly fall back to Morgan.",
+    ] if experiment["needs_embeddings"] else [])
+
+    return [
+md(f"# DD-PRiSM-plus — {experiment['title']}",
+   "",
+   f"**Drug representation: `{features}`**",
+   "",
+   experiment["what"],
+   *embeddings_note,
    "",
    "**GPU session.** Accelerator → **GPU T4 x2**, Internet → **On**.",
    "",
    "**Attach step 2's output:** right panel → **Add Input → Your Work →**",
    "**Notebook Output**, pick your `02_preprocess` version.",
+   "",
+   "### What to look for",
+   "",
+   experiment["expect"],
+   "",
+   "---",
    "",
    "Three stages run in order, all on the authors' own model classes from",
    "`original/ddprism_original.py`:",
@@ -234,17 +342,26 @@ md("# DD-PRiSM-plus — Step 3: training",
    "| stage | data | learning rate |",
    "|---|---|---|",
    "| pretrain | NCI60, ~8.9M rows | 1e-2 |",
-   "| finetune | ALMANAC monotherapy, 35k rows, only the 4 curve heads unfrozen | 1e-3 |",
+   "| finetune | ALMANAC monotherapy, 35k rows, curve prediction network unfrozen | 1e-3 |",
    "| combination | ALMANAC pairs, 1.98M rows | 1e-2 |",
    "",
-   "> **This will not finish in one session.** Kaggle stops you at ~12 hours.",
+   "> **This may not finish in one session.** Kaggle stops you at ~12 hours.",
    "> Every epoch is checkpointed, so just Save Version, attach *this* notebook's",
    "> output next time, and rerun — it resumes at the epoch it reached."),
 
 code("import os, glob",
      "",
      "REPO = '/kaggle/working/ddprism-plus'",
-     "RUNS = '/kaggle/working/runs'",
+     "",
+     f"FEATURES = {features!r}",
+     f"RUNS     = {runs!r}",
+     "",
+     "# This notebook owns this directory and no other. Two representations",
+     "# produce models of different shapes, so sharing one would try to resume a",
+     "# 512-wide model from an 896-wide checkpoint -- or silently overwrite the",
+     "# baseline this experiment is meant to be measured against.",
+     "print('features:', FEATURES)",
+     "print('runs    :', RUNS)",
      "",
      "if os.path.exists(REPO):",
      "    !cd {REPO} && git pull --quiet",
@@ -267,6 +384,19 @@ code("import os, glob",
      "print('processed:', PROCESSED)",
      "print('raw      :', DATA)"),
 
+*( [md("## Check the embeddings are there before spending GPU time"),
+    code("import pandas as pd",
+         "path = os.path.join(PROCESSED, 'drug_embeddings_chemberta.parquet')",
+         "if not os.path.exists(path):",
+         "    raise SystemExit(",
+         "        'drug_embeddings_chemberta.parquet is missing from ' + PROCESSED +",
+         "        '\\nRerun 02_preprocess with Internet ON -- it has an embedding '",
+         "        'cell now -- then attach that new version here.')",
+         "embeddings = pd.read_parquet(path)",
+         "print('embeddings:', embeddings.shape)",
+         "print('drugs     :', f'{len(embeddings):,}')")]
+   if experiment["needs_embeddings"] else [] ),
+
 md("## Resume from a previous session",
    "",
    "**Save & Run All always starts a fresh container**, so a previous run's",
@@ -286,7 +416,9 @@ code("import shutil",
      "",
      "os.makedirs(RUNS, exist_ok=True)",
      "restored = 0",
-     "for found in glob.glob('/kaggle/input/**/runs/*/checkpoint.pt', recursive=True):",
+     f"# Only this experiment's own checkpoints, from {folder}/ and nowhere else.",
+     f"pattern = '/kaggle/input/**/{folder}/*/checkpoint.pt'",
+     "for found in glob.glob(pattern, recursive=True):",
      "    stage = os.path.basename(os.path.dirname(found))",
      "    os.makedirs(os.path.join(RUNS, stage), exist_ok=True)",
      "    for name in ('checkpoint.pt', 'best.pt', 'history.json'):",
@@ -294,6 +426,8 @@ code("import shutil",
      "        if os.path.exists(source):",
      "            shutil.copy(source, os.path.join(RUNS, stage, name))",
      "            restored += 1",
+     f"for config in glob.glob('/kaggle/input/**/{folder}/config.json', recursive=True):",
+     "    shutil.copy(config, os.path.join(RUNS, 'config.json'))",
      "print('restored', restored, 'checkpoint files')",
      "",
      "for stage in REDO:",
@@ -309,11 +443,11 @@ md("## Install and check"),
 code("!pip install --quiet zipfile-deflate64 pyarrow",
      "!python -m pytest tests -q -x --ignore=tests/test_train.py"),
 
-md("## Choose the model, then train",
+md("## Train",
    "",
-   "Both compute the same thing. `original` is the authors' loop over 186",
-   "pathways; `fast` batches those 186 steps and is pinned to the published",
-   "model at 1e-10 by the test suite, and measured at 1.3e-15 on a T4.",
+   "`original` is the authors' loop over 186 pathways; `fast` batches those 186",
+   "steps and is pinned to the published model at 1e-10 by the test suite, and",
+   "measured at 1.3e-15 on a T4. They compute the same thing.",
    "",
    "The difference is only speed, but at this scale speed decides whether you",
    "finish. Measured on a T4, per NCI60 epoch:",
@@ -323,19 +457,39 @@ md("## Choose the model, then train",
    "| `original` | 31.5 | **57** |",
    "| `fast` | 6.0 | **300** |",
    "",
-   "The paper's early stopping has patience 20 with a rate drop at 10, which",
-   "routinely runs 40-80 epochs. 57 leaves no margin: one restart and the quota",
-   "is gone. Set `MODEL` below to whichever you want.",
-   "",
    "`--max-hours` stops cleanly and checkpoints before Kaggle pulls the plug."),
+
+*( [md("### Warm start — only if the budget forces it",
+      "",
+      "Widening the drug input means the Morgan checkpoint cannot simply be",
+      "loaded: `drug_block` goes from 512 input columns to 896. `--init-from`",
+      "copies the 512 it can and starts the new columns at **zero**, so at step",
+      "zero the network computes exactly what the Morgan model computed and the",
+      "embedding has to earn its weight from there. Two tests pin that",
+      "equivalence.",
+      "",
+      "It turns ~6 GPU-hours of pretraining into a fraction of that — but a",
+      "warm-started run is not an independent one, and has to be reported as a",
+      "warm start. **Leave `INIT_FROM = None` unless you are out of quota.**")]
+   if experiment["needs_embeddings"] else [] ),
 
 code("MODEL = 'fast'      # 'original' for the authors' loop, 'fast' for the same maths batched",
      "STAGE = 'all'       # or e.g. 'finetune combination' to redo just those two",
+     *( ["",
+         "# None = train the drug branches from scratch, which is the clean",
+         "# comparison. To warm-start instead, attach a Morgan run and uncomment:",
+         "INIT_FROM = None",
+         "# INIT_FROM = glob.glob('/kaggle/input/**/runs/pretrain/best.pt', recursive=True)[0]"]
+        if experiment["needs_embeddings"] else ["", "INIT_FROM = None"] ),
      "",
-     "ARGS = f'--data {DATA} --processed {PROCESSED} --out {RUNS} --model {MODEL} --stage {STAGE}'",
+     "ARGS = (f'--data {DATA} --processed {PROCESSED} --out {RUNS} '",
+     "        f'--model {MODEL} --stage {STAGE} --drug-features {FEATURES}')",
+     "if INIT_FROM:",
+     "    ARGS += f' --init-from {INIT_FROM}'",
+     "",
      "!python -m ddprism.train {ARGS} --batch-size 1024 --max-hours 10.5"),
 
-md("## Results so far"),
+md("## Training curve"),
 
 code("import json",
      "for stage in ('pretrain', 'finetune', 'combination'):",
@@ -352,23 +506,139 @@ code("import json",
      "print('  fine-tuned  RMSE 0.0914  PCC 0.8791')",
      "print('  combination RMSE 0.0854  PCC 0.9063')"),
 
-md("## Score on the held-out sets -- the numbers to quote",
+md("## Score on the held-out sets — the numbers to quote",
    "",
    "Training reports on a random slice of its own pool, which splits individual",
    "measurements: the same drug on the same cell line can be in training at one",
    "dose and validation at another. The paper's figures hold out whole entities.",
-   "This scores the trained models on those, so the comparison is like for like.",
+   "This scores the trained model on those, so the comparison is like for like.",
    "",
    "No training, one forward pass per split."),
 
-code("!python -m ddprism.evaluate --data {DATA} --processed {PROCESSED} --runs {RUNS}"),
+code("!python -m ddprism.evaluate --data {DATA} --processed {PROCESSED} "
+     "--runs {RUNS} --drug-features {FEATURES}"),
 
 md("## Save",
    "",
    "**Save Version → Save & Run All (Commit).**",
    "",
+   "This notebook's output holds `evaluation.json` for this experiment alone.",
+   "`06_compare` reads it, together with the other experiments', and puts them",
+   "side by side.",
+   "",
    "If training stopped on the time budget rather than finishing, attach this",
    "notebook's own output next session and rerun. It picks up mid-stage."),
+]
+
+
+COMPARE_CELLS = [
+md("# DD-PRiSM-plus — Compare the experiments",
+   "",
+   "**CPU session** — this only reads saved results, and should cost no GPU.",
+   "",
+   "**Attach every experiment's output:** right panel → **Add Input → Your Work",
+   "→ Notebook Output**, once per notebook you want in the table:",
+   "",
+   "| notebook | representation |",
+   "|---|---|",
+   "| `03_train` | `morgan` — the paper |",
+   "| `04_experiment_fusion` | `morgan+chemberta` |",
+   "| `05_experiment_chemberta` | `chemberta` |",
+   "",
+   "Whichever are attached will appear. Missing ones are simply left out."),
+
+code("import glob, json, os",
+     "",
+     "found = sorted(glob.glob('/kaggle/input/**/runs*/evaluation.json',",
+     "                         recursive=True))",
+     "results, configs = {}, {}",
+     "for path in found:",
+     "    directory = os.path.dirname(path)",
+     "    label = os.path.basename(directory)",
+     "    label = 'morgan' if label == 'runs' else label.replace('runs-', '')",
+     "    results[label] = json.load(open(path))",
+     "    config = os.path.join(directory, 'config.json')",
+     "    if os.path.exists(config):",
+     "        configs[label] = json.load(open(config))",
+     "",
+     "if not results:",
+     "    raise SystemExit('no evaluation.json found -- attach the experiment '",
+     "                     'notebook outputs via Add Input.')",
+     "",
+     "# Baseline first; everything else is read as a change from it.",
+     "results = dict(sorted(results.items(), key=lambda kv: kv[0] != 'morgan'))",
+     "",
+     "print(f\"{'experiment':<20}{'drug input':>12}{'warm start':>12}\")",
+     "for label in results:",
+     "    config = configs.get(label, {})",
+     "    started = 'yes' if config.get('init_from') else 'no'",
+     "    print(f\"{label:<20}{config.get('drug_dim', '?'):>12}{started:>12}\")"),
+
+md("## Held-out results, side by side",
+   "",
+   "**`unseen_drug` is the column this whole line of work is about.** The paper",
+   "names the limitation itself — *\"we need more informative drug features for",
+   "the phenotypic prediction\"* — and the baseline scores PCC 0.7585 there",
+   "against 0.9386 on unseen pairs.",
+   "",
+   "`unseen_cellline` and `unseen_pair` are not expected to move much. They are",
+   "already above 0.93 and are not limited by how the drug is described."),
+
+code("STAGES = ('pretrain', 'finetune', 'combination')",
+     "labels = list(results)",
+     "",
+     "for stage in STAGES:",
+     "    rows = {k: v[stage] for k, v in results.items() if stage in v}",
+     "    if not rows:",
+     "        continue",
+     "    splits = sorted({s for r in rows.values() for s in r})",
+     "    print(f'\\n{stage}')",
+     "    print(f\"  {'split':<18}\" + ''.join(f'{k:>24}' for k in rows))",
+     "    print(f\"  {'':<18}\" + ''.join(f\"{'RMSE':>12}{'PCC':>12}\" for _ in rows))",
+     "    for split in splits:",
+     "        line = f'  {split:<18}'",
+     "        for label in rows:",
+     "            got = rows[label].get(split)",
+     "            line += (f\"{got['rmse']:>12.4f}{got['pcc']:>12.4f}\" if got",
+     "                     else ' ' * 24)",
+     "        print(line)"),
+
+md("## Did it actually help?",
+   "",
+   "Change relative to the Morgan baseline, on every split. A negative RMSE",
+   "delta and a positive PCC delta are improvements."),
+
+code("base = results.get('morgan')",
+     "if base is None:",
+     "    print('no morgan baseline attached -- nothing to compare against')",
+     "else:",
+     "    for label, values in results.items():",
+     "        if label == 'morgan':",
+     "            continue",
+     "        print(f'\\n{label}  vs  morgan')",
+     "        for stage in STAGES:",
+     "            if stage not in values or stage not in base:",
+     "                continue",
+     "            for split in sorted(values[stage]):",
+     "                if split not in base[stage]:",
+     "                    continue",
+     "                got, ref = values[stage][split], base[stage][split]",
+     "                d_rmse = got['rmse'] - ref['rmse']",
+     "                d_pcc = got['pcc'] - ref['pcc']",
+     "                mark = '  <-- better' if (d_rmse < 0 and d_pcc > 0) else ''",
+     "                print(f'  {stage:<12}{split:<18}'",
+     "                      f'RMSE {d_rmse:+.4f}   PCC {d_pcc:+.4f}{mark}')"),
+
+md("## A caution on reading this",
+   "",
+   "One run per representation is one sample. A difference of a few thousandths",
+   "of RMSE is inside the noise of a different random seed and should not be",
+   "reported as an improvement. What would be a real result is `unseen_drug`",
+   "moving by a visible margin — its gap to `unseen_pair` is currently about",
+   "**0.18 PCC**, which is far larger than seed noise.",
+   "",
+   "If the margin turns out to be small, the honest report is that a pretrained",
+   "embedding did not help here, which is a finding rather than a failure."),
 ]
 
 
@@ -428,7 +698,9 @@ def write(cells, name):
 def main():
     ok = write(CELLS, "01_setup_and_data.ipynb")
     ok = write(PREPROCESS_CELLS, "02_preprocess.ipynb") and ok
-    ok = write(TRAIN_CELLS, "03_train.ipynb") and ok
+    for experiment in EXPERIMENTS:
+        ok = write(train_cells(experiment), experiment["file"]) and ok
+    ok = write(COMPARE_CELLS, "06_compare.ipynb") and ok
     return 0 if ok else 1
 
 
