@@ -119,7 +119,10 @@ SOURCES = [
         "approx_mb": 38.8,
         "note": "O'Neil et al. external validation set. Despite the .xls name "
                 "it is really an xlsx, so read it with engine='openpyxl'. Single "
-                "sheet 'combination response'; the viability label is 'X/X0'.",
+                "sheet 'combination response'; the viability label is 'X/X0'. "
+                "Optional: nothing in this repository reads it yet, so 39 MB is "
+                "not fetched by default. Pass --include-optional for it.",
+        "optional": True,
     },
     {
         "key": "chem2d",
@@ -127,10 +130,11 @@ SOURCES = [
         "url": ("https://wiki.nci.nih.gov/download/attachments/155844992/"
                 "Chem2D_Jun2016.zip?version=1&modificationDate=1486993270000&api=v2"),
         "approx_mb": 80.6,
-        "optional": True,
-        "note": "The SDF the paper parsed with RDKit to get SMILES. Only needed "
-                "if you want to reproduce that route exactly rather than using "
-                "nsc_smiles.csv.",
+        "note": "The SDF the paper parsed with RDKit. Required, not optional: "
+                "preprocess.py and embed_drugs.py both default to it, and it is "
+                "what makes the drug counts match the paper. nsc_smiles.csv is "
+                "the alternative route and is more complete, which sounds better "
+                "and is not -- it inflates every downstream count by ~11%.",
     },
 ]
 

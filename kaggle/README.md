@@ -1,49 +1,58 @@
-# Running DD-PRiSM-plus on Kaggle GPU
+# Running DD-PRiSM-plus on Kaggle
 
-Three phases. Phase 1 needs no data and takes about ten minutes -- do it first,
-because it tells us whether the vectorised model is worth using on a GPU before
-we invest any effort in the data.
+**The six notebooks in this directory are the actual procedure.** Import them
+into Kaggle and run them in order; each one carries its own instructions.
+
+| # | notebook | session | roughly | what it does |
+|---|---|---|---|---|
+| 1 | `01_setup_and_data` | CPU | 30 min | fetch and verify the 8 required data sources |
+| 2 | `02_preprocess` | CPU, internet **on** | 40 min | build the training tables and the drug embeddings |
+| 3 | `03_train` | GPU | ~7 h | the paper's model — Morgan fingerprint |
+| 4 | `04_experiment_fusion` | GPU | ~7 h | Morgan + ChemBERTa |
+| 5 | `05_experiment_chemberta` | GPU | ~7 h | ChemBERTa alone (the control) |
+| 6 | `06_compare` | CPU | seconds | all finished runs side by side |
+
+Each experiment writes to its own directory, so no run can overwrite another.
+Attach the *previous* notebook's saved output as an input to the next one.
+
+Do not hand-edit the notebooks. They are generated:
+
+```bash
+python scripts/build_kaggle_notebook.py
+```
+
+The generator compiles every code cell before writing and refuses to emit a
+notebook that does not parse — one shipped with a `SyntaxError` once and cost a
+session. `tests/test_notebooks.py` checks the committed files still match.
+
+This document is the **background**: the account setup, and the things that went
+wrong during development that a reproducer will hit too.
 
 ---
 
-## Phase 1 -- GPU check (no data needed, ~10 min)
-
-### 1. Prepare your Kaggle account
+## Before anything
 
 - Sign in at <https://www.kaggle.com>
-- Go to **Settings -> Phone Verification** and verify your phone number.
-  Without this you cannot use a GPU or turn on internet access.
-
-### 2. Create the notebook
-
-- **Create -> Notebook**
-- Open the right-hand panel (the `<` arrow, top right)
-- **Session options -> Accelerator -> GPU T4 x2**
-- **Session options -> Internet -> On** (needed for `git clone`)
-
-### 3. Paste and run these cells
+- **Settings -> Phone Verification** and verify your phone number. Without this
+  you cannot use a GPU or turn on internet access.
+- Open a notebook's right-hand panel (the `<` arrow, top right) to reach
+  **Session options -> Accelerator** and **-> Internet**.
 
 Two Jupyter rules worth knowing, because breaking either gives you a confusing
 `SyntaxError`: shell commands need a leading `!`, and `%cd` is a notebook magic
 that must sit alone on its own line. You cannot chain them with `&&`.
 
-```python
-!git clone https://github.com/SanaNiroomand/DD-PRiSM-plus.git /kaggle/working/ddprism-plus
-```
+---
 
-```python
-%cd /kaggle/working/ddprism-plus
-```
+## Optional: prove the fast model on your GPU first (~10 min)
 
-```python
-!python -m pytest tests -q
-```
+Needs no data, so it runs the moment a GPU session starts:
 
 ```python
 !python kaggle/gpu_check.py --batch 1024 --iters 10
 ```
 
-### 4. What to look for
+### What to look for
 
 The script prints three blocks:
 
@@ -69,26 +78,39 @@ one does.
 
 ---
 
-## Phase 2 -- Data (entirely on Kaggle)
+## The data (entirely on Kaggle)
 
 Every source is scriptable, so nothing needs to be downloaded locally and
-re-uploaded. Run this in the same notebook, with **Internet -> On**:
+re-uploaded. This is what `01_setup_and_data` runs:
 
 ```python
 !python scripts/get_data.py --dest /kaggle/working/data
 ```
 
-That pulls all seven files, about 1 GB, in a few minutes:
+That pulls eight files, about 1.0 GB, in a few minutes:
 
 | File | Size | Source |
 |---|---|---|
 | `DOSERESP.zip` (NCI60, **version 10**) | 333 MB | NCI wiki |
 | `ComboDrugGrowth_Nov2017.zip` (ALMANAC) | 86 MB | NCI wiki |
+| `Chem2D_Jun2016.zip` | 81 MB | NCI wiki |
 | `nsc_smiles.csv` | 17 MB | NCI wiki |
 | `OmicsExpressionProteinCodingGenesTPMLogp1.csv` | 450 MB | DepMap 23Q4 via figshare |
+| `Model.csv` | 0.4 MB | DepMap 23Q4 via figshare |
 | `sample_info_18q3.csv` | 0.06 MB | DepMap 18Q3 via figshare |
 | `c2.cp.kegg_legacy...gmt` | 0.1 MB | Broad data host |
-| `oneil_combination_response.xls` | 39 MB | AACR |
+
+A ninth source, O'Neil et al. (39 MB, AACR), is the paper's external validation
+set. Nothing in this repository reads it yet, so it is **opt-in**:
+`--include-optional`.
+
+**Use `Model.csv`, not `sample_info_18q3.csv`, for cell-line names.** The 18Q3
+Achilles file covers only the 485 lines that were screened and resolves just 35
+of the 66 needed. That mistake looks like a preprocessing bug for a long time.
+
+**Fingerprints come from `Chem2D_Jun2016.zip`**, which is what the authors
+parsed. `nsc_smiles.csv` is simpler and *more* complete, which sounds better and
+is not: it covers all 57,041 NSCs and inflates every downstream count by ~11%.
 
 Then verify:
 
@@ -252,12 +274,27 @@ Measured end to end on a T4, per NCI60 epoch:
 
 ---
 
+### Held-out splits are not optional
+
+The authors publish no ALMANAC train/test split. Without building one,
+fine-tuning and the combination model train on rows that belong to the paper's
+own test sets, and every ALMANAC metric you get back is optimistic. Our first
+runs did exactly this.
+
+`scripts/preprocess.py --stage almanac_splits` builds them, and `require_split()`
+makes training **refuse** the unsplit tables rather than quietly use everything.
+If training stops with a message naming `almanac_mono_splits`, that is why.
+
+---
+
 ## Quick reference
 
 ```bash
-python -m pytest tests -q                              # 23 correctness checks
+python -m pytest tests -q                              # the test suite
 python kaggle/gpu_check.py --batch 1024 --iters 10     # correctness + speed on GPU
 python bench/bench_monotherapy.py --device cuda --backward --batch 1024
-python scripts/get_data.py --dest data                 # fetch all seven sources (~1 GB)
+python scripts/get_data.py --dest data                 # fetch the 8 required sources (~1 GB)
 python scripts/get_data.py --dest data --check         # verify them
+python scripts/embed_drugs.py --data data --out processed --model chemberta
+python scripts/build_kaggle_notebook.py                # regenerate the six notebooks
 ```
