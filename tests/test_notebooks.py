@@ -133,3 +133,36 @@ def test_every_shipped_notebook_is_valid_json_and_parses(name):
         source = cell["source"]
         source = "".join(source) if isinstance(source, list) else source
         ast.parse(_as_python(source))     # raises SyntaxError on failure
+
+
+def test_repair_flag_guards_both_redo_and_stage():
+    """A half-applied repair is worse than none.
+
+    REPAIR has to gate REDO *and* STAGE together. Gating only REDO would delete
+    the checkpoints and then retrain all three stages, throwing away a good
+    pretrain; gating only STAGE would run the two stages and immediately resume
+    the very checkpoints the repair exists to discard.
+    """
+    for experiment in EXPERIMENTS:
+        source = "\n".join(c["source"] for c in train_cells(experiment)
+                           if c["cell_type"] == "code")
+        stages = experiment.get("repair")
+        if not stages:
+            assert "REPAIR" not in source
+            continue
+        assert f"REDO = {stages!r} if REPAIR else []" in source
+        assert f"STAGE = {' '.join(stages)!r} if REPAIR else 'all'" in source
+        assert "REPAIR = True" in source
+        # The markdown must say how to turn it off again.
+        prose = "\n".join(c["source"] for c in train_cells(experiment)
+                          if c["cell_type"] == "markdown")
+        assert "REPAIR = False" in prose
+
+
+def test_repair_never_discards_a_good_pretrain():
+    """Pretraining was not affected by the leak, so it must be reused."""
+    for experiment in EXPERIMENTS:
+        stages = experiment.get("repair")
+        if stages:
+            assert "pretrain" not in stages, (
+                "repairing pretrain would throw away six GPU-hours of valid work")

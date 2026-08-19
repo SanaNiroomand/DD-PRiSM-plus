@@ -263,6 +263,7 @@ EXPERIMENTS = [
                   "measured RMSE 0.0828 / PCC 0.9386 against the paper's "
                   "0.0830 / 0.9387.",
         "needs_embeddings": False,
+        "repair": ["finetune", "combination"],
     },
     {
         "file": "04_experiment_fusion.ipynb",
@@ -431,9 +432,38 @@ md("## Resume from a previous session",
    "nothing. Its `best.pt` is kept, since the next stage loads weights from it",
    "until the retrain overwrites them."),
 
+*( [md("### One-time repair: " + ", ".join(experiment["repair"]),
+       "",
+       "**`REPAIR = True` below, and it should stay that way until you have run",
+       "this once.**",
+       "",
+       "These stages were first trained before the ALMANAC leakage fix, when",
+       "training still used the unsplit tables. Re-running afterwards did not",
+       "correct them: both stages had already early-stopped, so they resumed,",
+       "ran a single epoch, stopped again, and kept the contaminated weights.",
+       "",
+       "It shows up as an impossible ordering in the held-out scores -- the",
+       "fine-tuned model scored **PCC 0.9526 on unseen drugs against 0.9082 on",
+       "unseen pairs**. A drug the model has never seen cannot be easier than a",
+       "new pairing of drugs it knows. Those rows were in its training set.",
+       "",
+       "Pretraining is unaffected -- the NCI60 splits existed all along, and its",
+       "ordering is correct -- so this reuses `pretrain/best.pt` and retrains",
+       "only the two damaged stages. About 15 minutes, not 7 hours.",
+       "",
+       "**Set `REPAIR = False` afterwards**, or every later run throws these two",
+       "stages away and retrains them for nothing.")]
+   if experiment.get("repair") else [] ),
+
 code("import shutil",
      "",
-     "REDO = []          # e.g. ['finetune', 'combination'] to retrain those two",
+     *( [f"# One-time repair of {', '.join(experiment['repair'])} -- see above.",
+         "# Set to False once it has run.",
+         "REPAIR = True",
+         "",
+         f"REDO = {experiment['repair']!r} if REPAIR else []"]
+        if experiment.get("repair") else
+        ["REDO = []          # e.g. ['finetune', 'combination'] to retrain those two"] ),
      "",
      "os.makedirs(RUNS, exist_ok=True)",
      "restored = 0",
@@ -495,7 +525,9 @@ md("## Train",
    if experiment["needs_embeddings"] else [] ),
 
 code("MODEL = 'fast'      # 'original' for the authors' loop, 'fast' for the same maths batched",
-     "STAGE = 'all'       # or e.g. 'finetune combination' to redo just those two",
+     *( [f"STAGE = {' '.join(experiment['repair'])!r} if REPAIR else 'all'"]
+        if experiment.get("repair") else
+        ["STAGE = 'all'       # or e.g. 'finetune combination' to redo just those two"] ),
      *( ["",
          "# None = train the drug branches from scratch, which is the clean",
          "# comparison. To warm-start instead, attach a Morgan run and uncomment:",
