@@ -39,13 +39,11 @@ comparison:
 
 | stage | our RMSE | paper RMSE | our PCC | paper PCC |
 |---|---|---|---|---|
-| pretrained (NCI60) | **0.0828** | 0.0830 | **0.9386** | 0.9387 |
-| fine-tuned (ALMANAC mono) | **0.0817** | 0.0914 | **0.9082** | 0.8791 |
-| combination (ALMANAC pairs) | **0.0821** | 0.0854 | **0.9176** | 0.9063 |
+| pretrained (NCI60) | 0.0828 | 0.0830 | 0.9386 | 0.9387 |
+| fine-tuned (ALMANAC mono) | 0.0898 | 0.0914 | 0.8854 | 0.8791 |
+| combination (ALMANAC pairs) | 0.0849 | 0.0854 | 0.9100 | 0.9063 |
 
-Pretraining lands on the published numbers to within 0.0002 RMSE. The other two
-rows come out **better** than published, for a reason we can name — see
-"Fine-tuning" below.
+All three stages land within 0.0016 RMSE of published.
 
 Stratified by what is held out, the pretrained model shows where the difficulty
 actually is:
@@ -55,16 +53,46 @@ actually is:
 | unseen pair | 0.0828 | 0.9386 |
 | unseen cell line | 0.0815 | 0.9355 |
 | **unseen drug** | **0.1604** | **0.7585** |
+| unseen both | 0.1502 | 0.7673 |
 
 A cancer type the model has never seen costs it almost nothing. **A drug it has
 never seen costs it a fifth of its correlation.** The paper names the cause
 itself: *"we need more informative drug features for the phenotypic
 prediction."* This is what the experiment below is aimed at.
 
-*Caveat.* On the stratified **combination** splits our PCCs (0.92–0.94) are far
-above the paper's (~0.75). We could not reconcile this and believe the held-out
-entities differ — our `unseen_all` has 6,516 rows against the paper's 54. We
-therefore quote only the unseen-pair column as comparable.
+The combination model shows the same shape, degrading monotonically with how
+much is withheld:
+
+| held out | RMSE | PCC |
+|---|---|---|
+| unseen pair | 0.0849 | 0.9100 |
+| unseen cell line | 0.1203 | 0.7882 |
+| unseen one drug | 0.1680 | 0.7810 |
+| unseen two drugs | 0.2186 | 0.7604 |
+| unseen all | 0.2024 | 0.6522 |
+
+### A leak of our own, found by the ordering
+
+An earlier version of this report quoted 0.0817 / 0.9082 and 0.0821 / 0.9176 for
+the last two rows and claimed they beat the paper. They did not; they were
+contaminated, and the giveaway was that the *ordering* above was inverted. The
+fine-tuned model scored **PCC 0.9526 on unseen drugs against 0.9082 on unseen
+pairs**, and the combination model 0.9436 on `unseen_all` against 0.9176 on
+`unseen_pair`. A drug the model has never seen cannot be easier than a new
+pairing of drugs it knows. Those rows were in its training set.
+
+The cause was the resume path, not the split builder. Both stages were first
+trained before the leakage fix below; re-running afterwards did not correct them,
+because each had already early-stopped, so it resumed, ran one epoch, stopped
+again and kept the contaminated weights. Retraining the two stages from the
+intact pretrained weights moved `unseen_all` by **0.29 PCC**.
+
+This also settles a caveat the earlier report could not explain — that our
+stratified combination PCCs (0.92–0.94) sat far above the paper's ~0.75. Clean,
+they are 0.65–0.91. The gap was our leak, not a difference in held-out entities.
+
+**No metric is quoted here that a monotonic difficulty ordering does not
+support.** That check costs nothing and would have caught this weeks earlier.
 
 ## Preprocessing, validated against published counts
 
@@ -99,9 +127,12 @@ the four curve parameters." Read literally, that is the four `Linear(2, 1)`
 heads — **12 trainable parameters**, which cannot absorb the NCI60 → ALMANAC
 shift: we measured RMSE 0.1426 / PCC 0.699 against the paper's 0.0914 / 0.8791.
 Figure S3B draws the boundary differently, with the whole Curve prediction
-network unfrozen (45,082 parameters). That reading gives 0.0876 / 0.8940 and,
-after the leakage fix below, 0.0817 / 0.9082. It is why our fine-tuned row beats
-the published one, and it is a reading of a figure, not a certainty.
+network unfrozen (45,082 parameters, 0.92% of the model). That reading lands at
+0.0898 / 0.8854, essentially on the published figure, which is the evidence for
+it. It remains a reading of a figure rather than a certainty.
+
+An earlier draft credited this choice with *beating* the paper. That was wrong:
+the margin came from the leak described above, not from the reading.
 
 **Data leakage, found and removed.** The authors publish no ALMANAC train/test
 split, so our first runs fine-tuned and trained the combination model on rows
@@ -182,6 +213,34 @@ Each experiment is a separate notebook writing to a separate directory, so no
 run can overwrite another; `06_compare` puts the finished results side by side.
 Embeddings are z-scored per dimension before fusion, because a dense float block
 concatenated onto 5%-sparse bits otherwise dominates the first layer.
+
+### Result: it helps on new drugs, and only there
+
+Monotherapy model on NCI60, both runs trained to early stop:
+
+| held out | Morgan | Morgan + ChemBERTa | |
+|---|---|---|---|
+| **unseen drug** | 0.1604 / 0.7585 | **0.1502 / 0.7912** | **RMSE −6.4%, PCC +0.033** |
+| **unseen both** | 0.1502 / 0.7673 | 0.1506 / **0.7910** | PCC +0.024 |
+| unseen pair | 0.0828 / 0.9386 | 0.0825 / 0.9390 | unchanged |
+| unseen cell line | 0.0815 / 0.9355 | 0.0940 / 0.9292 | −0.006 |
+
+The gain is confined to the two splits containing drugs the model has never
+seen, which is exactly where the paper says its representation is weak. Nothing
+else moves — the easy splits were never limited by the drug description.
+
+**The gain does not survive fine-tuning.** On ALMANAC, fusion is level or
+slightly behind at every split. We think this is a property of the data rather
+than of the embedding: fine-tuning trains 0.92% of the model with the drug
+branches frozen, and ALMANAC contains **102 drugs**. A richer representation
+earns its keep generalising across 51,416 compounds; across 102 it has nothing
+to buy. Testing that would need a fine-tuning set with far more drugs, which
+NCI-ALMANAC does not have.
+
+**Training the combination model is unstable at lr 1e-2.** Validation
+correlation swings between 0.81 and −0.49 across neighbouring epochs before the
+rate drops. It converges, but where it lands has a luck component. This affects
+the published schedule equally, since it is the schedule the paper specifies.
 
 ## Layout
 

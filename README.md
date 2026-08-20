@@ -69,17 +69,24 @@ Yes. Measured on the paper's own held-out sets:
 | stage | our RMSE | paper | our PCC | paper |
 |---|---|---|---|---|
 | pretrained | 0.0828 | 0.0830 | 0.9386 | 0.9387 |
-| fine-tuned | 0.0817 | 0.0914 | 0.9082 | 0.8791 |
-| combination | 0.0821 | 0.0854 | 0.9176 | 0.9063 |
+| fine-tuned | 0.0898 | 0.0914 | 0.8854 | 0.8791 |
+| combination | 0.0849 | 0.0854 | 0.9100 | 0.9063 |
 
 RMSE is error, so **lower is better**. PCC is agreement, so **higher is better**.
 
-These are the "unseen pair" numbers, which is what the paper reports. Our last
-two rows come out slightly *better* than published — we read the fine-tuning
-step as unfreezing the whole curve prediction network, which is how Figure S3B
-draws it. Reading it as only the four output neurons gives 12 trainable
-parameters and much worse results, so we think this reading is right, but it is
-a reading.
+These are the "unseen pair" numbers, which is what the paper reports. Every
+stage lands within 0.0016 RMSE of published.
+
+An earlier version of this table claimed the last two rows *beat* the paper.
+They didn't — those numbers were contaminated, and the giveaway was that our
+held-out scores were ordered impossibly: the model scored better on drugs it had
+never seen than on new pairings of drugs it knew. A drug the model has never
+seen cannot be the easier problem. See the report for the full account; the
+short version is that two training stages resumed from checkpoints made before a
+leakage fix, and kept the leaked weights.
+
+Beating a published result is a claim that should make you suspicious of your
+own pipeline first.
 
 We also checked the model's equations *without training anything*. The authors
 published their trained model's output for 2,556 real drug pairs, so we fed
@@ -120,6 +127,25 @@ too, size is not the explanation — the chemistry is.
 Only the **first layer** of the network changes width. Every other layer keeps
 the published size, so any difference in the results comes from the drug
 description and not from a bigger model.
+
+### What happened
+
+| held out | Morgan | Morgan + ChemBERTa | |
+|---|---|---|---|
+| **a drug never trained on** | 0.7585 | **0.7912** | **+0.033** |
+| **drug *and* cell line new** | 0.7673 | **0.7910** | +0.024 |
+| new pairing of known drugs | 0.9386 | 0.9390 | unchanged |
+| a cancer type never trained on | 0.9355 | 0.9292 | −0.006 |
+
+**It helps on new drugs, and nowhere else** — which is precisely the weakness
+the paper names. Error on unseen drugs falls 6.4%. The easy splits don't move,
+because they were never limited by how the drug is described.
+
+One honest limitation: the gain **does not carry through to the ALMANAC stages**,
+where fusion is level or slightly behind. We think that's about the data, not
+the embedding — those stages fine-tune under 1% of the model on a set of just
+**102 drugs**. A richer description of a molecule pays off when you have to
+generalise across 51,416 of them; across 102 there is nothing to buy.
 
 ## How to run it
 
