@@ -130,22 +130,33 @@ description and not from a bigger model.
 
 ### What happened
 
-| held out | Morgan | Morgan + ChemBERTa | |
+Agreement (PCC) on the held-out sets, higher is better:
+
+| held out | Morgan | Morgan + ChemBERTa | ChemBERTa alone |
 |---|---|---|---|
-| **a drug never trained on** | 0.7585 | **0.7912** | **+0.033** |
-| **drug *and* cell line new** | 0.7673 | **0.7910** | +0.024 |
-| new pairing of known drugs | 0.9386 | 0.9390 | unchanged |
-| a cancer type never trained on | 0.9355 | 0.9292 | −0.006 |
+| **a drug never trained on** | 0.7585 | **0.7912** | 0.7802 |
+| **drug *and* cell line new** | 0.7673 | **0.7910** | 0.7806 |
+| new pairing of known drugs | 0.9386 | 0.9390 | 0.9346 |
+| a cancer type never trained on | 0.9355 | 0.9292 | 0.9323 |
 
-**It helps on new drugs, and nowhere else** — which is precisely the weakness
-the paper names. Error on unseen drugs falls 6.4%. The easy splits don't move,
-because they were never limited by how the drug is described.
+**It helps on new drugs, and nowhere else** — precisely the weakness the paper
+names. Error on unseen drugs falls 6.4%. The other splits move by less than
+0.006 in any direction, because they were never limited by how the drug is
+described.
 
-One honest limitation: the gain **does not carry through to the ALMANAC stages**,
-where fusion is level or slightly behind. We think that's about the data, not
-the embedding — those stages fine-tune under 1% of the model on a set of just
-**102 drugs**. A richer description of a molecule pays off when you have to
-generalise across 51,416 of them; across 102 there is nothing to buy.
+**And it isn't just a bigger model.** That's what the third column is for.
+ChemBERTa alone has **49,152 fewer parameters** than the fingerprint baseline
+and still beats it on both unseen-drug rows. You can't buy an improvement with
+capacity you don't have.
+
+The two descriptions also turn out to be **complementary** — using both beats
+using either alone. The fingerprint isn't made redundant by the embedding.
+
+One honest limitation: the gain **does not carry through to the ALMANAC stages**.
+We think that's about the data, not the embedding — those stages fine-tune under
+1% of the model on a set of just **102 drugs**. A richer description of a
+molecule pays off when you must generalise across 51,416 of them; across 102
+there is nothing to buy.
 
 ## How to run it
 

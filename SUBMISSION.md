@@ -197,16 +197,16 @@ The unseen-drug result above is the paper's own stated limitation, measured. A
 *contains*, not what it *does*. We replace it with an embedding from
 **ChemBERTa**, a transformer pretrained on 77M PubChem molecules.
 
-| notebook | drug representation | inputs | parameters vs paper |
+| notebook | drug representation | inputs | parameters |
 |---|---|---|---|
-| `03_train` | Morgan fingerprint | 512 | baseline |
-| `04_experiment_fusion` | Morgan + ChemBERTa | 896 | +147,456 (+5.7%) |
-| `05_experiment_chemberta` | ChemBERTa alone | 384 | **−49,152** |
+| `03_train` | Morgan fingerprint | 512 | 4,882,576 |
+| `04_experiment_fusion` | Morgan + ChemBERTa | 896 | 5,030,032 (+147,456) |
+| `05_experiment_chemberta` | ChemBERTa alone | 384 | **4,833,424 (−49,152)** |
 
 The third run is the control. Fusion adds capacity, so a win there can be
-attributed to size; ChemBERTa alone has *fewer* parameters than the paper's
-model, and a win there cannot. Only the first `Linear` of each drug branch
-changes width — every later layer keeps its published size, so a difference is
+attributed to size; ChemBERTa alone has *fewer* parameters than the baseline,
+and a win there cannot. Only the first `Linear` of each drug branch changes
+width — every later layer keeps its published size, so a difference is
 attributable to the representation.
 
 Each experiment is a separate notebook writing to a separate directory, so no
@@ -216,31 +216,49 @@ concatenated onto 5%-sparse bits otherwise dominates the first layer.
 
 ### Result: it helps on new drugs, and only there
 
-Monotherapy model on NCI60, both runs trained to early stop:
+Monotherapy model on NCI60, all three runs trained to early stop. RMSE / PCC:
 
-| held out | Morgan | Morgan + ChemBERTa | |
+| held out | Morgan | Morgan + ChemBERTa | ChemBERTa alone |
 |---|---|---|---|
-| **unseen drug** | 0.1604 / 0.7585 | **0.1502 / 0.7912** | **RMSE −6.4%, PCC +0.033** |
-| **unseen both** | 0.1502 / 0.7673 | 0.1506 / **0.7910** | PCC +0.024 |
-| unseen pair | 0.0828 / 0.9386 | 0.0825 / 0.9390 | unchanged |
-| unseen cell line | 0.0815 / 0.9355 | 0.0940 / 0.9292 | −0.006 |
+| **unseen drug** | 0.1604 / 0.7585 | **0.1502 / 0.7912** | 0.1545 / 0.7802 |
+| **unseen both** | 0.1502 / 0.7673 | 0.1506 / **0.7910** | **0.1491** / 0.7806 |
+| unseen pair | 0.0828 / 0.9386 | 0.0825 / 0.9390 | 0.0854 / 0.9346 |
+| unseen cell line | 0.0815 / 0.9355 | 0.0940 / 0.9292 | 0.0846 / 0.9323 |
 
-The gain is confined to the two splits containing drugs the model has never
-seen, which is exactly where the paper says its representation is weak. Nothing
-else moves — the easy splits were never limited by the drug description.
+Three things follow.
 
-**The gain does not survive fine-tuning.** On ALMANAC, fusion is level or
-slightly behind at every split. We think this is a property of the data rather
-than of the embedding: fine-tuning trains 0.92% of the model with the drug
-branches frozen, and ALMANAC contains **102 drugs**. A richer representation
-earns its keep generalising across 51,416 compounds; across 102 it has nothing
-to buy. Testing that would need a fine-tuning set with far more drugs, which
+**The gain is confined to drugs the model has never seen** — exactly where the
+paper says its representation is weak. All three models sit within 0.006 PCC of
+each other on unseen pairs and unseen cell lines. Those splits were never
+limited by how the drug is described.
+
+**It is not a capacity effect.** ChemBERTa alone has **49,152 fewer parameters**
+than the Morgan baseline and still improves unseen-drug PCC by 0.022 and RMSE by
+3.7%. A gain cannot be bought with capacity by a model that has less of it.
+
+**The two representations are complementary.** On unseen drugs, fusion (0.7912)
+beats ChemBERTa alone (0.7802), which beats Morgan (0.7585); RMSE agrees. The
+fingerprint is not redundant once an embedding is present — the substructure
+bag and the pretrained representation each carry something the other does not.
+
+### What does not follow
+
+**The gain does not survive fine-tuning.** On ALMANAC both variants are level or
+behind at every split. We read this as a property of the data rather than of the
+embedding: fine-tuning trains 0.93% of the model with the drug branches frozen,
+and ALMANAC contains **102 drugs**. A richer representation earns its keep
+generalising across 51,416 compounds; across 102 there is nothing to buy.
+Testing that would need a fine-tuning set with far more drugs, which
 NCI-ALMANAC does not have.
 
-**Training the combination model is unstable at lr 1e-2.** Validation
-correlation swings between 0.81 and −0.49 across neighbouring epochs before the
-rate drops. It converges, but where it lands has a luck component. This affects
-the published schedule equally, since it is the schedule the paper specifies.
+**The combination-stage differences are not interpretable.** Training that stage
+at lr 1e-2 is unstable: validation correlation swings between +0.93 and −0.59
+across neighbouring epochs before the rate drops. ChemBERTa alone posts the best
+combination `unseen_pair` of the three (0.0784 / 0.9246, better than the paper's
+0.0854 / 0.9063) — but the same model is the *worst* of the three at pretraining
+`unseen_pair`. A representation effect does not reverse sign between stages, so
+we read that spread as noise and do not claim it. The instability is a property
+of the published schedule, which is the schedule we ran.
 
 ## Layout
 
