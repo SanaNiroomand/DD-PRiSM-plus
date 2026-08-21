@@ -350,3 +350,78 @@ def test_evaluate_scores_every_held_out_split(tiny, tmp_path):
         for split, values in splits.items():
             assert values["n"] > 0
             assert 0.0 <= values["rmse"] < 5.0, f"{stage}/{split} rmse implausible"
+
+
+# ------------------------------------------------- the ordering sanity check
+
+def _scores(**pcc):
+    return {split: {"n": 1000, "rmse": 0.1, "pcc": value, "r2": 0.8}
+            for split, value in pcc.items()}
+
+
+def test_the_real_leak_would_be_caught():
+    """The numbers that actually leaked, taken from the run that produced them.
+
+    Before the repair, the fine-tuned baseline scored PCC 0.9526 on unseen drugs
+    against 0.9082 on unseen pairs, and the combination model 0.9436 on
+    unseen_all against 0.9176 on unseen_pair. Both are impossible, and both went
+    unnoticed through a code fix and a re-run. If this test ever passes silently
+    with those inputs, the check has stopped working.
+    """
+    from ddprism.evaluate import ordering_violations
+
+    leaked = {
+        "finetune": _scores(unseen_pair=0.9082, unseen_cellline=0.9177,
+                            unseen_drug=0.9526, unseen_all=0.9678),
+        "combination": _scores(unseen_pair=0.9176, unseen_cellline=0.9255,
+                               unseen_one_drug=0.9415, unseen_two_drug=0.9425,
+                               unseen_all=0.9436),
+    }
+    violations = ordering_violations(leaked)
+    flagged = {(stage, harder) for stage, harder, _, _ in violations}
+    assert ("finetune", "unseen_drug") in flagged
+    assert ("combination", "unseen_one_drug") in flagged
+
+
+def test_the_repaired_numbers_pass():
+    """The same two stages after retraining, from the repair run."""
+    from ddprism.evaluate import ordering_violations
+
+    clean = {
+        "pretrain": _scores(unseen_pair=0.9386, unseen_cellline=0.9355,
+                            unseen_drug=0.7585, unseen_all=0.7673),
+        "finetune": _scores(unseen_pair=0.8854, unseen_cellline=0.8980,
+                            unseen_drug=0.8046, unseen_all=0.7866),
+        "combination": _scores(unseen_pair=0.9100, unseen_cellline=0.7882,
+                               unseen_one_drug=0.7810, unseen_two_drug=0.7604,
+                               unseen_all=0.6522),
+    }
+    assert ordering_violations(clean) == []
+
+
+@pytest.mark.parametrize("features,scores", [
+    ("morgan+chemberta", dict(unseen_pair=0.8954, unseen_cellline=0.7727,
+                              unseen_one_drug=0.7289, unseen_two_drug=0.7015,
+                              unseen_all=0.6483)),
+    ("chemberta", dict(unseen_pair=0.9246, unseen_cellline=0.8354,
+                       unseen_one_drug=0.7130, unseen_two_drug=0.6986,
+                       unseen_all=0.6791)),
+])
+def test_both_experiments_pass_the_ordering_check(features, scores):
+    """Every reported experiment must survive the check its own report states."""
+    from ddprism.evaluate import ordering_violations
+    assert ordering_violations({"combination": _scores(**scores)}) == []
+
+
+def test_noise_on_a_tiny_split_is_not_flagged():
+    """The monotherapy unseen_all split has 36 rows; a hair over is not a leak."""
+    from ddprism.evaluate import ordering_violations
+
+    noisy = {"finetune": _scores(unseen_pair=0.8854, unseen_cellline=0.8980,
+                                 unseen_drug=0.8046, unseen_all=0.8100)}
+    assert ordering_violations(noisy) == []      # +0.005, inside tolerance
+
+
+def test_a_missing_split_is_not_a_violation():
+    from ddprism.evaluate import ordering_violations
+    assert ordering_violations({"pretrain": _scores(unseen_pair=0.93)}) == []

@@ -52,6 +52,71 @@ def metrics(predicted, observed):
             "r2": (1 - residual / total).item()}
 
 
+# Which split is strictly harder than which. Holding out a whole drug is harder
+# than holding out a pairing of drugs the model has seen; holding out both is
+# harder still. Nothing about a model can make the harder problem the easier one.
+#
+# This is here because a leak survived a code fix and a re-run undetected, and
+# the only thing that gave it away was the scores coming out in this order
+# backwards -- PCC 0.9526 on unseen drugs against 0.9082 on unseen pairs. No
+# ground truth is needed to spot that, and no honest model produces it.
+HARDER_THAN = {
+    "pretrain": [("unseen_drug", "unseen_pair"),
+                 ("unseen_drug", "unseen_cellline"),
+                 ("unseen_all", "unseen_drug"),
+                 ("unseen_all", "unseen_cellline")],
+    "finetune": [("unseen_drug", "unseen_pair"),
+                 ("unseen_drug", "unseen_cellline"),
+                 ("unseen_all", "unseen_drug"),
+                 ("unseen_all", "unseen_cellline")],
+    "combination": [("unseen_one_drug", "unseen_pair"),
+                    ("unseen_two_drug", "unseen_one_drug"),
+                    ("unseen_all", "unseen_two_drug"),
+                    ("unseen_cellline", "unseen_pair")],
+}
+
+# Small splits are genuinely noisy -- the monotherapy unseen_all set has 36 rows
+# -- so only flag a margin too large to be sampling noise.
+ORDERING_TOLERANCE = 0.02
+
+
+def ordering_violations(results, tolerance=ORDERING_TOLERANCE):
+    """Splits that scored better than a strictly easier split.
+
+    Returns (stage, harder, easier, margin) for each violation. An empty list
+    is the expected outcome; anything else means the harder split contains rows
+    the model was trained on.
+    """
+    found = []
+    for stage, pairs in HARDER_THAN.items():
+        scores = results.get(stage, {})
+        for harder, easier in pairs:
+            if harder not in scores or easier not in scores:
+                continue
+            margin = scores[harder]["pcc"] - scores[easier]["pcc"]
+            if margin > tolerance:
+                found.append((stage, harder, easier, margin))
+    return found
+
+
+def report_ordering(results):
+    violations = ordering_violations(results)
+    banner("sanity: harder splits must not score better")
+    if not violations:
+        print("  ok -- every held-out set scores at or below the easier one")
+        return True
+
+    for stage, harder, easier, margin in violations:
+        print(f"  VIOLATION  {stage}: {harder} beats {easier} by {margin:+.4f} PCC")
+    print()
+    print("  A split that withholds more cannot be the easier problem. The usual")
+    print("  cause is training rows leaking into the harder split -- most often a")
+    print("  stage resumed from a checkpoint trained before a split fix, which")
+    print("  early-stops immediately and keeps the contaminated weights.")
+    print("  Retrain the affected stage rather than reporting these numbers.")
+    return False
+
+
 def show(stage, split, result):
     published = PAPER.get(stage, {}).get(split)
     line = (f"  {split:<18} n={result['n']:>9,}   RMSE {result['rmse']:.4f}   "
@@ -239,6 +304,8 @@ def main():
         paper_rmse, paper_pcc = PAPER[stage]["unseen_pair"]
         print(f"  {stage:<14}{got['rmse']:>9.4f}{paper_rmse:>9.4f}"
               f"{got['pcc']:>9.4f}{paper_pcc:>9.4f}")
+
+    report_ordering(results)
 
     destination = args.out or (args.runs / "evaluation.json")
     destination.parent.mkdir(parents=True, exist_ok=True)

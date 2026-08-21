@@ -91,8 +91,19 @@ This also settles a caveat the earlier report could not explain — that our
 stratified combination PCCs (0.92–0.94) sat far above the paper's ~0.75. Clean,
 they are 0.65–0.91. The gap was our leak, not a difference in held-out entities.
 
-**No metric is quoted here that a monotonic difficulty ordering does not
-support.** That check costs nothing and would have caught this weeks earlier.
+**No metric is quoted here that a difficulty ordering does not support**, and
+the check is no longer a matter of remembering to look. `ddprism.evaluate` now
+encodes which split is strictly harder than which and refuses to stay quiet
+about a violation:
+
+```
+sanity: harder splits must not score better
+  ok -- every held-out set scores at or below the easier one
+```
+
+It needs no ground truth and no second run — only the numbers already printed.
+A test feeds it the exact figures that leaked, so it cannot quietly stop
+working.
 
 ## Preprocessing, validated against published counts
 
@@ -188,7 +199,11 @@ their three util notebooks written out cell by cell by
 each one logged. Training runs against their classes; our vectorised versions
 exist to be checked against them.
 
-**96 tests.**
+**A test suite that pins the claims.** Equivalence to the authors' model
+at 1e-10 in float64 (outputs *and* gradients), the decomposition identity
+against Supplementary Data 3, the three-stage pipeline end to end including
+checkpoint/resume, the drug-feature assembly, the generated notebooks, and
+the ordering check fed the exact figures that once leaked past us.
 
 ## Extension: a better description of the drug
 
@@ -260,6 +275,58 @@ combination `unseen_pair` of the three (0.0784 / 0.9246, better than the paper's
 we read that spread as noise and do not claim it. The instability is a property
 of the published schedule, which is the schedule we ran.
 
+## Appendix: every number
+
+All three runs, every stage, every held-out split. RMSE / PCC — lower / higher
+is better. Each run trained to early stop on a Kaggle T4; epochs and wall time
+are per run, not per stage.
+
+**Monotherapy model, pretrained on NCI60**
+
+| held out | n | Morgan | Morgan + ChemBERTa | ChemBERTa |
+|---|---|---|---|---|
+| unseen_pair | 529,056 | 0.0828 / 0.9386 | 0.0825 / 0.9390 | 0.0854 / 0.9346 |
+| unseen_cellline | 419,808 | 0.0815 / 0.9355 | 0.0940 / 0.9292 | 0.0846 / 0.9323 |
+| unseen_drug | 250,807 | 0.1604 / 0.7585 | **0.1502 / 0.7912** | 0.1545 / 0.7802 |
+| unseen_all | 11,101 | 0.1502 / 0.7673 | 0.1506 / **0.7910** | **0.1491** / 0.7806 |
+
+**Monotherapy model, fine-tuned on NCI-ALMANAC**
+
+| held out | n | Morgan | Morgan + ChemBERTa | ChemBERTa |
+|---|---|---|---|---|
+| unseen_pair | 1,824 | 0.0898 / 0.8854 | 0.0915 / 0.8799 | 0.0896 / 0.8868 |
+| unseen_cellline | 1,581 | 0.0807 / 0.8980 | 0.0828 / 0.8914 | 0.0807 / 0.8997 |
+| unseen_drug | 743 | 0.1709 / 0.8046 | 0.1594 / 0.7928 | 0.1821 / 0.7423 |
+| unseen_all | 36 | 0.1903 / 0.7866 | 0.1761 / 0.7417 | 0.2029 / 0.6617 |
+
+**Combination therapy model**
+
+| held out | n | Morgan | Morgan + ChemBERTa | ChemBERTa |
+|---|---|---|---|---|
+| unseen_pair | 195,558 | 0.0849 / 0.9100 | 0.0913 / 0.8954 | 0.0784 / 0.9246 |
+| unseen_cellline | 83,829 | 0.1203 / 0.7882 | 0.1234 / 0.7727 | 0.1071 / 0.8354 |
+| unseen_one_drug | 130,317 | 0.1680 / 0.7810 | 0.1808 / 0.7289 | 0.1875 / 0.7130 |
+| unseen_two_drug | 1,554 | 0.2186 / 0.7604 | 0.2168 / 0.7015 | 0.2196 / 0.6986 |
+| unseen_all | 6,516 | 0.2024 / 0.6522 | 0.1941 / 0.6483 | 0.1895 / 0.6791 |
+
+**Run details**
+
+| | Morgan | Morgan + ChemBERTa | ChemBERTa |
+|---|---|---|---|
+| drug input | 512 | 896 | 384 |
+| parameters | 4,882,576 | 5,030,032 | 4,833,424 |
+| pretrain epochs | 65 | 67 | 88 |
+| finetune epochs | 64 | 60 | 55 |
+| combination epochs | 82 | 74 | 88 |
+| s/epoch (pretrain, T4) | ~380 | ~382 | ~368 |
+
+All three pass the ordering check at every stage. The **fine-tuned** and
+**combination** blocks are reported for completeness but carry no claim: the
+fine-tuning stage trains 0.93% of the model on 102 drugs, and the combination
+stage is unstable enough at lr 1e-2 that a 0.03 PCC spread is not a signal.
+The claim in this report rests on the **pretraining** block, where the drug
+representation is actually learned and the splits are large.
+
 ## Layout
 
 ```
@@ -285,7 +352,7 @@ scripts/
   build_kaggle_notebook.py     generate the six notebooks, refusing to write a broken one
 kaggle/                        01_setup_and_data, 02_preprocess, 03_train,
                                04_experiment_fusion, 05_experiment_chemberta, 06_compare
-tests/                         96 tests
+tests/                         the test suite
 00_*.ipynb, 01-04_*.ipynb      the authors' original notebooks. The three 00_* files
                                are the input to extract_original.py, not spare copies.
 ```

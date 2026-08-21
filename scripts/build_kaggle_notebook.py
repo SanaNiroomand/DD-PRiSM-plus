@@ -73,7 +73,7 @@ md("## 2. Install what Kaggle lacks",
 code("!pip install --quiet zipfile-deflate64 rdkit openpyxl",
      "print('installed')"),
 
-md("## 3. Check the model code (23 tests, ~5 s)"),
+md("## 3. Check the model code"),
 
 code("!python -m pytest tests -q"),
 
@@ -115,7 +115,7 @@ md("## 5. Download everything else (~1 GB)",
    "Files land **directly in `DATA`**. Already-present files are skipped, so this",
    "is safe to rerun."),
 
-code("!python scripts/get_data.py --dest {DATA} --include-optional --attempts 3"),
+code("!python scripts/get_data.py --dest {DATA} --attempts 3"),
 
 md("## 6. Retry stragglers",
    "",

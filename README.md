@@ -119,7 +119,7 @@ than a checklist of fragments. Three experiments, each in its own notebook:
 | `04_experiment_fusion` | Morgan **+** ChemBERTa | does richer chemistry help? |
 | `05_experiment_chemberta` | ChemBERTa alone | the control (see below) |
 
-The third one matters. Fusion adds 5.7% more parameters than the paper's model,
+The third one matters. Fusion adds 3.0% more parameters than the baseline,
 so if it wins, someone can fairly say "you just used a bigger network."
 ChemBERTa alone has **fewer** parameters than the paper's model. If that wins
 too, size is not the explanation — the chemistry is.
