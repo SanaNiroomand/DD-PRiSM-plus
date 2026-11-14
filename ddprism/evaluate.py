@@ -151,6 +151,16 @@ def checkpoint_drug_dim(path):
     return weight.shape[1]
 
 
+def checkpoint_curve_width(path):
+    """Width of the curve head this checkpoint was trained with.
+
+    Read off the weights for the same reason as the drug input: a flag can be
+    wrong, a saved tensor cannot.
+    """
+    state = torch.load(path, map_location="cpu", weights_only=False)
+    return state["model"]["final_y_max.weight"].shape[1]
+
+
 def checkpoint_model_kind(path):
     """Which Monotherapy model wrote this checkpoint.
 
@@ -251,8 +261,12 @@ def main():
         kind = checkpoint_model_kind(anchor)
     print(f"  model        : {kind} (from checkpoint)")
 
-    model, forward, as_list = build_monotherapy(gene_set, kind, args.buckets,
-                                                device, drug_dim=data.drug_dim)
+    curve_width = checkpoint_curve_width(anchor)
+    if curve_width != 2:
+        print(f"  curve head   : width {curve_width} (from checkpoint)")
+    model, forward, as_list = build_monotherapy(
+        gene_set, kind, args.buckets, device, drug_dim=data.drug_dim,
+        curve_width=curve_width, curve_relu=config.get("curve_relu", True))
     results = {}
 
     for stage, folder, splits in (

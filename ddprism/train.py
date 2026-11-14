@@ -67,7 +67,51 @@ def adapt_drug_input(model, drug_dim):
     return model
 
 
-def build_monotherapy(gene_set, kind, num_buckets, device, drug_dim=512):
+def adapt_curve_head(model, curve_width, curve_relu=True):
+    """Widen the vector the four Hill-curve parameters are read off.
+
+    The published tail is ``Linear(8, 2) -> BatchNorm1d(2) -> ReLU``, and all
+    four parameters are affine functions of that one 2-dimensional
+    non-negative vector. Measured on the authors' trained model, the four
+    outputs span **rank 1 of 4** and half the bottleneck sits at zero, so the
+    model cannot set a curve's height, steepness and midpoint independently.
+
+    As with ``adapt_drug_input``, the authors' file is not edited: the last
+    Linear, its BatchNorm and the four heads are replaced after construction.
+    Nothing earlier changes, so a difference in the results is attributable to
+    the width and not to a larger network elsewhere.
+
+    8 matches ``Linear(32, 8)`` directly above it. Wider buys nothing, since
+    everything still passes through that layer first.
+    """
+    current = model.final_y_max.in_features
+    if curve_width == current and curve_relu:
+        return model
+
+    device = model.final_y_max.weight.device
+    # Keep everything up to the last Linear; that layer and whatever follows it
+    # (BatchNorm, and the ReLU when present) are what get rebuilt. Slicing by a
+    # fixed count would break the moment this is applied twice.
+    modules = list(model.final_block)
+    last_linear = max(i for i, m in enumerate(modules)
+                      if isinstance(m, torch.nn.Linear))
+    body = modules[:last_linear]
+    tail = [torch.nn.Linear(modules[last_linear].in_features, curve_width),
+            torch.nn.BatchNorm1d(curve_width)]
+    if curve_relu:
+        tail.append(torch.nn.ReLU())
+    model.final_block = torch.nn.Sequential(*body, *tail).to(device)
+
+    for name in CURVE_HEADS:
+        setattr(model, name, torch.nn.Linear(curve_width, 1).to(device))
+
+    model.curve_width = curve_width
+    model.curve_relu = curve_relu
+    return model
+
+
+def build_monotherapy(gene_set, kind, num_buckets, device, drug_dim=512,
+                      curve_width=2, curve_relu=True):
     """Either the authors' model or the vectorised one, which is the same maths.
 
     'original' loops over 186 pathways exactly as published. 'fast' evaluates
@@ -80,10 +124,13 @@ def build_monotherapy(gene_set, kind, num_buckets, device, drug_dim=512):
     """
     if kind == "original":
         model = adapt_drug_input(MonotherapyModel(gene_set).to(device), drug_dim)
+        model = adapt_curve_head(model, curve_width, curve_relu)
         forward = lambda genes, fp, dose: model([genes, fp, dose])
         return model, forward, True
     model = VectorisedMonotherapyModel(gene_set, num_buckets=num_buckets,
-                                       drug_dim=drug_dim).to(device)
+                                       drug_dim=drug_dim,
+                                       curve_width=curve_width,
+                                       curve_relu=curve_relu).to(device)
     forward = lambda genes, fp, dose: model(genes, fp, dose)
     return model, forward, False
 
@@ -530,6 +577,15 @@ def main():
     parser.add_argument("--no-standardize", action="store_true",
                         help="feed embeddings at their native scale instead of "
                              "z-scoring each dimension across the drug library")
+    parser.add_argument("--curve-width", type=int, default=2,
+                        help="width of the vector the four Hill-curve "
+                             "parameters are read off. 2 is the published "
+                             "value and reproduces the paper; at 2 the four "
+                             "outputs span rank 1 of 4 and half the vector is "
+                             "dead. 8 matches the layer above it.")
+    parser.add_argument("--no-curve-relu", action="store_true",
+                        help="drop the ReLU after the final BatchNorm, letting "
+                             "the curve parameters go negative (ablation)")
     parser.add_argument("--init-from", type=Path, default=None,
                         help="warm-start from a checkpoint trained on narrower "
                              "drug features; new input columns start at zero")
@@ -550,12 +606,15 @@ def main():
               if "all" in args.stage else list(args.stage))
     print(f"  stages       : {', '.join(stages)}")
 
-    model, forward, as_list = build_monotherapy(gene_set, args.model,
-                                                args.buckets, device,
-                                                drug_dim=data.drug_dim)
+    model, forward, as_list = build_monotherapy(
+        gene_set, args.model, args.buckets, device, drug_dim=data.drug_dim,
+        curve_width=args.curve_width, curve_relu=not args.no_curve_relu)
     parameters = sum(p.numel() for p in model.parameters())
     print(f"  model        : {args.model} ({parameters:,} parameters, "
           f"drug input {data.drug_dim})")
+    print(f"  curve head   : width {args.curve_width}"
+          f"{'' if not args.no_curve_relu else ', no ReLU'}"
+          f"{'   (published)' if args.curve_width == 2 and not args.no_curve_relu else ''}")
     if args.init_from:
         warm_start(model, args.init_from, device)
 
@@ -566,6 +625,8 @@ def main():
         "drug_features": args.drug_features,
         "drug_dim": int(data.drug_dim),
         "standardize": not args.no_standardize,
+        "curve_width": args.curve_width,
+        "curve_relu": not args.no_curve_relu,
         "model": args.model,
         "buckets": args.buckets,
         "seed": args.seed,

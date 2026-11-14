@@ -425,3 +425,41 @@ def test_noise_on_a_tiny_split_is_not_flagged():
 def test_a_missing_split_is_not_a_violation():
     from ddprism.evaluate import ordering_violations
     assert ordering_violations({"pretrain": _scores(unseen_pair=0.93)}) == []
+
+
+# ------------------------------------------------- the widened curve head
+
+@pytest.mark.parametrize("width", [2, 8])
+def test_the_pipeline_runs_at_either_curve_width(tiny, tmp_path, width):
+    """All three stages, then evaluation, with the head widened."""
+    raw, processed = tiny
+    out = tmp_path / "runs"
+    result = train(raw, processed, out,
+                   ("--max-epochs", "1", "--model", "fast",
+                    "--curve-width", str(width)))
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert f"curve head   : width {width}" in result.stdout
+
+    config = json.loads((out / "config.json").read_text())
+    assert config["curve_width"] == width
+
+    # Evaluation must rebuild the head from the checkpoint, unprompted.
+    scored = subprocess.run(
+        [sys.executable, "-m", "ddprism.evaluate", "--data", str(raw),
+         "--processed", str(processed), "--runs", str(out)],
+        cwd=ROOT, capture_output=True, text=True)
+    assert scored.returncode == 0, scored.stdout + scored.stderr
+    assert "unseen_pair" in scored.stdout
+
+
+def test_evaluation_reads_the_curve_width_off_the_weights(tiny, tmp_path):
+    """A flag can be wrong; a saved tensor cannot."""
+    from ddprism.evaluate import checkpoint_curve_width
+
+    raw, processed = tiny
+    out = tmp_path / "runs"
+    assert train(raw, processed, out,
+                 ("--stage", "pretrain", "--max-epochs", "1", "--model", "fast",
+                  "--curve-width", "8")).returncode == 0
+
+    assert checkpoint_curve_width(out / "pretrain" / "best.pt") == 8

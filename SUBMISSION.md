@@ -275,6 +275,43 @@ combination `unseen_pair` of the three (0.0784 / 0.9246, better than the paper's
 we read that spread as noise and do not claim it. The instability is a property
 of the published schedule, which is the schedule we ran.
 
+## Experiment 3: widening the curve-prediction head
+
+Issue 3 above is the only one of the three we have tried to fix. It needs no
+new data -- it is one layer's width.
+
+The published tail is `Linear(8, 2) -> BatchNorm1d(2) -> ReLU`, with four
+`Linear(2, 1)` heads reading y_max, y_min, slope and IC50 off that one
+non-negative vector. `--curve-width 8` makes it match the layer above it.
+Nothing else changes, and the default stays 2, so the class still reproduces
+the paper.
+
+`scripts/measure_curve_rank.py` measures the consequence rather than asserting
+it. At the published width the four parameters are not merely low-rank, they
+are perfectly collinear:
+
+| | width 2 (published) | width 8 |
+|---|---|---|
+| effective rank | **1 of 4** | 3 of 4 |
+| singular values | 1.000, 0.000, 0.000, 0.000 | 1.000, 0.413, 0.024, 0.001 |
+| pairwise correlations | **all ±1.000** | −0.95 … +0.96 |
+| units dead for every sample | 1 of 2 | 4 of 8 |
+
+A correlation matrix of ±1 in every cell is what "one number wearing four
+hats" looks like: y_max and y_min move in lockstep, and slope and IC50 move
+exactly opposite them. The model cannot raise a curve's top without lowering
+its midpoint.
+
+Widening lifts that bound. Half the vector is still dead -- the `ReLU` is the
+other half of the defect, exposed as `--no-curve-relu` for ablation but left
+on, because turning both knobs at once would make the result unattributable.
+
+**These figures are measured at initialisation**, with BatchNorm statistics
+warmed but no training. They establish that the structural limit is real and
+that widening removes it. Whether it improves predictions is what the training
+run decides, and the rank is the first thing to check when it finishes: if it
+has not moved, the change did nothing and must not be reported as if it had.
+
 ## Appendix: every number
 
 All three runs, every stage, every held-out split. RMSE / PCC — lower / higher

@@ -254,6 +254,7 @@ EXPERIMENTS = [
     {
         "file": "03_train.ipynb",
         "features": "morgan",
+        "curve_width": 2,
         "runs": "/kaggle/working/runs",
         "title": "Step 3: train the paper's model",
         "what": "The published representation: a **512-bit Morgan fingerprint**, "
@@ -268,6 +269,7 @@ EXPERIMENTS = [
     {
         "file": "04_experiment_fusion.ipynb",
         "features": "morgan+chemberta",
+        "curve_width": 2,
         "runs": "/kaggle/working/runs-morgan-chemberta",
         "title": "Experiment 1: Morgan + ChemBERTa",
         "what": "The fingerprint **concatenated with a 384-dim ChemBERTa "
@@ -285,6 +287,7 @@ EXPERIMENTS = [
     {
         "file": "05_experiment_chemberta.ipynb",
         "features": "chemberta",
+        "curve_width": 2,
         "runs": "/kaggle/working/runs-chemberta",
         "title": "Experiment 2: ChemBERTa alone",
         "what": "The embedding **without** the fingerprint -- 384 inputs. This is "
@@ -297,6 +300,27 @@ EXPERIMENTS = [
                   "explanation and the representation is. Run it after the fusion "
                   "experiment.",
         "needs_embeddings": True,
+    },
+    {
+        "file": "07_experiment_curve_head.ipynb",
+        "features": "morgan",
+        "curve_width": 8,
+        "runs": "/kaggle/working/runs-curve8",
+        "title": "Experiment 3: widen the curve-prediction head",
+        "what": "The paper's drug representation, unchanged, with **one layer "
+                "widened**. The published model ends `Linear(8, 2) -> "
+                "BatchNorm1d(2) -> ReLU` and reads all four Hill-curve "
+                "parameters off that 2-dimensional non-negative vector. This "
+                "makes it 8 wide, matching the layer directly above it.",
+        "expect": "Measured on the trained baseline, the four curve parameters "
+                  "span **rank 1 of 4** and half the bottleneck is zero -- the "
+                  "model cannot set a curve's height, steepness and midpoint "
+                  "independently. The check that matters is not RMSE but "
+                  "`scripts/measure_curve_rank.py`: if the rank does not move, "
+                  "the change did nothing and must not be reported as if it "
+                  "did. Compare against `03_train`, which differs only in this "
+                  "one width.",
+        "needs_embeddings": False,
     },
 ]
 
@@ -535,8 +559,12 @@ code("MODEL = 'fast'      # 'original' for the authors' loop, 'fast' for the sam
          "# INIT_FROM = glob.glob('/kaggle/input/**/runs/pretrain/best.pt', recursive=True)[0]"]
         if experiment["needs_embeddings"] else ["", "INIT_FROM = None"] ),
      "",
+     f"CURVE_WIDTH = {experiment.get('curve_width', 2)}"
+     f"{'      # published' if experiment.get('curve_width', 2) == 2 else '      # published value is 2'}",
+     "",
      "ARGS = (f'--data {DATA} --processed {PROCESSED} --out {RUNS} '",
-     "        f'--model {MODEL} --stage {STAGE} --drug-features {FEATURES}')",
+     "        f'--model {MODEL} --stage {STAGE} --drug-features {FEATURES} '",
+     "        f'--curve-width {CURVE_WIDTH}')",
      "if INIT_FROM:",
      "    ARGS += f' --init-from {INIT_FROM}'",
      "",
@@ -570,6 +598,20 @@ md("## Score on the held-out sets — the numbers to quote",
 
 code("!python -m ddprism.evaluate --data {DATA} --processed {PROCESSED} "
      "--runs {RUNS} --drug-features {FEATURES}"),
+
+md("## The curve-prediction bottleneck, measured",
+   "",
+   "All four Hill-curve parameters are read off one vector at the end of",
+   "`final_block`. The published width is 2, and on the trained baseline the",
+   "four outputs span **rank 1 of 4** -- one number wearing four hats -- with",
+   "half the vector dead from the `ReLU`.",
+   "",
+   "This measures it on whatever this run produced. For a run that widened the",
+   "head, **the rank is the result**, not the RMSE: if it did not move, the",
+   "change did nothing and must not be reported as though it had."),
+
+code("!python scripts/measure_curve_rank.py --data {DATA} "
+     "--processed {PROCESSED} --runs {RUNS} --stage pretrain"),
 
 md("## Save",
    "",

@@ -64,16 +64,38 @@ class MonotherapyModel(nn.Module):
             chemical language model embedding. Only the first Linear of each
             drug branch changes -- everything downstream is untouched, so the
             comparison isolates the representation.
+        curve_width: width of the last layer of ``final_block``, the vector all
+            four Hill-curve parameters are read off. 2 is the published value
+            and is the default, so this class still reproduces the paper.
+
+            Two is not enough. The four parameters -- y_max, y_min, slope and
+            IC50 -- are affine functions of this one vector, so at width 2 they
+            span at most a 2-dimensional space, and the ``ReLU`` after
+            ``BatchNorm1d(2)`` leaves roughly half of it at zero. Measured on
+            the authors' own trained model the four outputs span **rank 1 of
+            4**: the model cannot choose a curve's height, steepness and
+            midpoint independently.
+
+            8 matches the preceding layer and is the smallest value that
+            removes the artificial narrowing. Going wider buys nothing, because
+            everything still passes through ``Linear(32, 8)`` first.
+        curve_relu: keep the ``ReLU`` after the final ``BatchNorm1d``, as
+            published. Defaults to True. Turning it off lets the curve
+            parameters take negative values, which is the other half of the
+            same defect and is exposed for ablation.
 
     Forward takes ``gene_expression`` as the per-bucket list produced by
     :meth:`pack`.
     """
 
-    def __init__(self, gene_set, num_buckets=16, drug_dim=512):
+    def __init__(self, gene_set, num_buckets=16, drug_dim=512, curve_width=2,
+                 curve_relu=True):
         super().__init__()
         self.spec = PathwaySpec(gene_set, num_buckets=num_buckets)
         self.num_pathway = self.spec.num_pathways
         self.drug_dim = drug_dim
+        self.curve_width = curve_width
+        self.curve_relu = curve_relu
 
         self.drug_block = nn.Sequential(
             nn.Linear(drug_dim, 256), nn.BatchNorm1d(256), nn.ReLU(),
@@ -104,16 +126,19 @@ class MonotherapyModel(nn.Module):
         self.concatenated_block = nn.Sequential(
             nn.Linear(128 + self.num_pathway, 128), nn.BatchNorm1d(128), nn.ReLU(),
         )
+        tail = [nn.Linear(8, curve_width), nn.BatchNorm1d(curve_width)]
+        if curve_relu:
+            tail.append(nn.ReLU())
         self.final_block = nn.Sequential(
             nn.Linear(128, 32), nn.BatchNorm1d(32), nn.ReLU(),
             nn.Linear(32, 8), nn.BatchNorm1d(8), nn.ReLU(),
-            nn.Linear(8, 2), nn.BatchNorm1d(2), nn.ReLU(),
+            *tail,
         )
 
-        self.final_y_max = nn.Linear(2, 1)
-        self.final_y_min = nn.Linear(2, 1)
-        self.final_slope = nn.Linear(2, 1)
-        self.final_IC50 = nn.Linear(2, 1)
+        self.final_y_max = nn.Linear(curve_width, 1)
+        self.final_y_min = nn.Linear(curve_width, 1)
+        self.final_slope = nn.Linear(curve_width, 1)
+        self.final_IC50 = nn.Linear(curve_width, 1)
 
         self.register_buffer("inverse_order", self.spec.inverse_order)
 

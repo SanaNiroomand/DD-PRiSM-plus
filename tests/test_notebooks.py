@@ -38,16 +38,43 @@ def test_every_experiment_has_its_own_notebook():
     assert len(set(files)) == len(files), files
 
 
-def test_every_experiment_has_its_own_representation():
-    specs = [e["features"] for e in EXPERIMENTS]
+def _configuration(experiment):
+    """What makes an experiment distinct from the others.
+
+    Not the drug representation alone: the curve-head experiment reuses Morgan
+    and changes the architecture instead, so two experiments can share a
+    representation and still be different experiments.
+    """
+    return (experiment["features"], experiment.get("curve_width", 2))
+
+
+def test_no_two_experiments_share_a_configuration():
+    specs = [_configuration(e) for e in EXPERIMENTS]
     assert len(set(specs)) == len(specs), specs
 
 
-def test_the_baseline_reproduces_the_paper():
-    """One experiment must be plain Morgan, or there is nothing to compare to."""
-    baseline = [e for e in EXPERIMENTS if e["features"] == "morgan"]
+def test_exactly_one_experiment_is_the_published_configuration():
+    """The paper's own settings, or there is nothing to compare against.
+
+    Morgan fingerprints and the published curve width of 2. Every other
+    experiment differs from this one in exactly one respect.
+    """
+    baseline = [e for e in EXPERIMENTS if _configuration(e) == ("morgan", 2)]
     assert len(baseline) == 1
     assert baseline[0]["runs"] == "/kaggle/working/runs"
+
+
+def test_each_experiment_differs_from_the_baseline_in_one_respect():
+    """Two changes at once would make the result unattributable."""
+    baseline = next(e for e in EXPERIMENTS if _configuration(e) == ("morgan", 2))
+    for experiment in EXPERIMENTS:
+        if experiment is baseline:
+            continue
+        differences = sum(a != b for a, b in zip(_configuration(experiment),
+                                                 _configuration(baseline)))
+        assert differences == 1, (
+            f"{experiment['file']} changes {differences} things at once: "
+            f"{_configuration(experiment)} vs {_configuration(baseline)}")
 
 
 @pytest.mark.parametrize("experiment", EXPERIMENTS, ids=lambda e: e["features"])
