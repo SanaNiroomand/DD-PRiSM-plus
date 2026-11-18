@@ -10,6 +10,10 @@ into Kaggle and run them in order; each one carries its own instructions.
 | 3 | `03_train` | GPU | ~7 h | the paper's model — Morgan fingerprint |
 | 4 | `04_experiment_fusion` | GPU | ~7 h | Morgan + ChemBERTa |
 | 5 | `05_experiment_chemberta` | GPU | ~7 h | ChemBERTa alone (the control) |
+| 7 | `07_experiment_curve_head` | GPU | ~7 h | Morgan, curve head widened to 8 |
+| 2b | `02b_build_l1000` | CPU | ~20 min | build L1000 signatures from GSE92742 (needs the gctx as a dataset) |
+| 8 | `08_experiment_l1000` | GPU | ~7 h | Morgan + L1000 |
+| 9 | `09_experiment_l1000_only` | GPU | ~7 h | L1000 alone (the control) |
 | 6 | `06_compare` | CPU | seconds | all finished runs side by side |
 
 Each experiment writes to its own directory, so no run can overwrite another.
