@@ -36,6 +36,7 @@ FEATURE_SOURCES = {
     "morgan": "fingerprints.parquet",
     "chemberta": "drug_embeddings_chemberta.parquet",
     "molformer": "drug_embeddings_molformer.parquet",
+    "l1000": "drug_signatures_l1000.parquet",
 }
 
 # Morgan is binary and stays uint8; everything else is a dense float embedding
@@ -105,11 +106,20 @@ def load_drug_features(processed, spec, restrict=None, standardize=True):
     names = parse_spec(spec)
     missing = missing_sources(processed, names)
     if missing:
+        hints = []
+        for name in missing:
+            if name == "l1000":
+                hints.append(
+                    "    python scripts/fetch_l1000.py "
+                    f"--lincs <lincs> --data <raw> --out {processed}")
+            else:
+                hints.append(
+                    "    python scripts/embed_drugs.py "
+                    f"--model {name} --data <raw> --out {processed}")
         raise SystemExit(
             f"missing drug feature file(s) for: {', '.join(missing)}\n"
             f"  expected {', '.join(str(source_path(processed, n)) for n in missing)}\n"
-            f"  Build them with: python scripts/embed_drugs.py "
-            f"--model {missing[0]} --data <raw> --out {processed}")
+            "  Build them with:\n" + "\n".join(hints))
 
     blocks, report = [], {"sources": [], "standardized": standardize}
     index = None
