@@ -111,13 +111,13 @@ def test_notebook_pins_its_own_features_and_directory(experiment):
 
 
 @pytest.mark.parametrize("experiment",
-                         [e for e in EXPERIMENTS if e["needs_embeddings"]],
+                         [e for e in EXPERIMENTS if e.get("needs")],
                          ids=lambda e: e["features"])
-def test_embedding_experiments_check_the_file_exists_first(experiment):
+def test_feature_file_experiments_check_the_file_exists_first(experiment):
     """Fail before the GPU time is spent, not after."""
     source = "\n".join(c["source"] for c in train_cells(experiment)
                        if c["cell_type"] == "code")
-    assert "drug_embeddings_chemberta.parquet" in source
+    assert experiment["needs"]["file"] in source
     assert "raise SystemExit" in source
 
 
@@ -150,7 +150,7 @@ def test_checked_in_notebooks_are_current():
 
 @pytest.mark.parametrize("name", [e["file"] for e in EXPERIMENTS]
                          + ["01_setup_and_data.ipynb", "02_preprocess.ipynb",
-                            "06_compare.ipynb"])
+                            "02b_build_l1000.ipynb", "06_compare.ipynb"])
 def test_every_shipped_notebook_is_valid_json_and_parses(name):
     notebook = json.loads((NOTEBOOKS / name).read_text(encoding="utf-8"))
     assert notebook["cells"], f"{name} has no cells"

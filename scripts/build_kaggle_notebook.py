@@ -250,6 +250,20 @@ md("## Save it",
 # into another's directory, and a rerun of one never disturbs another. The
 # comparison happens afterwards, in 06_compare, from the saved outputs.
 
+CHEMBERTA_NEEDS = {
+    "file": "drug_embeddings_chemberta.parquet",
+    "source": "02_preprocess",
+    "build": "python scripts/embed_drugs.py --model chemberta",
+    "external": False,
+}
+L1000_NEEDS = {
+    "file": "drug_signatures_l1000.parquet",
+    "source": "02b_build_l1000",
+    "build": "python scripts/fetch_l1000.py",
+    "external": True,
+}
+
+
 EXPERIMENTS = [
     {
         "file": "03_train.ipynb",
@@ -263,7 +277,7 @@ EXPERIMENTS = [
         "expect": "Reproduces the published numbers. On the unseen pair set we "
                   "measured RMSE 0.0828 / PCC 0.9386 against the paper's "
                   "0.0830 / 0.9387.",
-        "needs_embeddings": False,
+        "needs": None,
         "repair": ["finetune", "combination"],
     },
     {
@@ -282,7 +296,7 @@ EXPERIMENTS = [
                   "the only place a richer representation has obvious room to "
                   "help. Expect unseen_cellline and unseen_pair to barely move; "
                   "they are already above 0.93 and are not limited by this.",
-        "needs_embeddings": True,
+        "needs": CHEMBERTA_NEEDS,
     },
     {
         "file": "05_experiment_chemberta.ipynb",
@@ -299,7 +313,7 @@ EXPERIMENTS = [
                   "paper's. If it also beats the baseline, capacity is not the "
                   "explanation and the representation is. Run it after the fusion "
                   "experiment.",
-        "needs_embeddings": True,
+        "needs": CHEMBERTA_NEEDS,
     },
     {
         "file": "07_experiment_curve_head.ipynb",
@@ -320,7 +334,43 @@ EXPERIMENTS = [
                   "the change did nothing and must not be reported as if it "
                   "did. Compare against `03_train`, which differs only in this "
                   "one width.",
-        "needs_embeddings": False,
+        "needs": None,
+    },
+    {
+        "file": "08_experiment_l1000.ipynb",
+        "features": "morgan+l1000",
+        "curve_width": 2,
+        "runs": "/kaggle/working/runs-morgan-l1000",
+        "title": "Experiment 4: Morgan + L1000",
+        "what": "The fingerprint **concatenated with a 978-gene L1000 "
+                "signature** -- 1,490 inputs in total. L1000 describes a drug "
+                "by the transcriptional change it induces in cells, so it "
+                "carries what a molecule *does*, not only what it is built from.",
+        "expect": "Watch **unseen_drug**, as with the ChemBERTa experiment: the "
+                  "baseline scores PCC 0.7585 there against 0.9386 on unseen "
+                  "pairs. A measured cell-effect signature is the most direct "
+                  "description of 'what this drug does', so this is where it has "
+                  "room to help. The catch is coverage -- only drugs that have "
+                  "an L1000 signature are scored, so read the coverage line that "
+                  "02b_build_l1000 printed first.",
+        "needs": L1000_NEEDS,
+    },
+    {
+        "file": "09_experiment_l1000_only.ipynb",
+        "features": "l1000",
+        "curve_width": 2,
+        "runs": "/kaggle/working/runs-l1000",
+        "title": "Experiment 5: L1000 alone",
+        "what": "The L1000 signature **without** the fingerprint -- 978 inputs. "
+                "The control for the fusion experiment: if the signature alone "
+                "carries the drug, the structural fingerprint was not what "
+                "helped.",
+        "expect": "Compare against Morgan on **unseen_drug**, over the same "
+                  "covered drugs. A signature is a measured response rather than "
+                  "a pretrained guess, so it can help where a fingerprint cannot "
+                  "-- or prove too noisy, which is itself a finding. Run it after "
+                  "the fusion experiment.",
+        "needs": L1000_NEEDS,
     },
 ]
 
@@ -329,18 +379,91 @@ def train_cells(experiment):
     """Cells for one experiment's notebook.
 
     Every experiment gets the same machinery -- the differences are the feature
-    spec, the run directory, and what the markdown says to look at.
+    spec, the run directory, whether it depends on a prebuilt feature file, and
+    what the markdown says to look at.
     """
     features = experiment["features"]
     runs = experiment["runs"]
     folder = runs.rsplit("/", 1)[-1]
 
-    embeddings_note = ([
+    needs = experiment.get("needs")
+    # A fusion run puts Morgan first, so a Morgan checkpoint can warm-start it.
+    is_fusion = bool(needs) and features.startswith("morgan+")
+    # An external feature file is built by its own notebook, not 02_preprocess,
+    # so it arrives as a separate attachment and has to be linked in.
+    external = bool(needs) and needs.get("external")
+
+    needs_note = ([
         "",
-        "**Requires** `drug_embeddings_chemberta.parquet` from `02_preprocess`. If",
-        "that file is missing, training stops immediately and tells you which",
-        "command builds it -- it does not quietly fall back to Morgan.",
-    ] if experiment["needs_embeddings"] else [])
+        f"**Requires `{needs['file']}` from `{needs['source']}`.** If it is",
+        "missing, training stops at once and tells you how to build it -- it",
+        "does not quietly fall back to Morgan.",
+    ] if needs else [])
+
+    assemble_cells = ([
+md("## Put the feature file beside the preprocessed tables",
+   "",
+   f"`{needs['source']}` wrote `{needs['file']}` as its own output, and training",
+   "reads every feature source from one `--processed` directory. This links the",
+   "preprocessed tables and that file into one writable folder, so attach",
+   f"**both** the `02_preprocess` output **and** the `{needs['source']}` output",
+   "via **Add Input**."),
+code("import glob, os",
+     "",
+     "MERGED = '/kaggle/working/processed'",
+     "os.makedirs(MERGED, exist_ok=True)",
+     "for name in os.listdir(PROCESSED):",
+     "    link = os.path.join(MERGED, name)",
+     "    if not os.path.exists(link):",
+     "        os.symlink(os.path.join(PROCESSED, name), link)",
+     "",
+     f"FEATURE_FILE = {needs['file']!r}",
+     "hits = glob.glob('/kaggle/input/**/' + FEATURE_FILE, recursive=True)",
+     "if not hits:",
+     f"    raise SystemExit(FEATURE_FILE + ' not found -- attach the {needs['source']} '",
+     "                     'output via Add Input.')",
+     "destination = os.path.join(MERGED, os.path.basename(hits[0]))",
+     "if not os.path.exists(destination):",
+     "    os.symlink(hits[0], destination)",
+     "PROCESSED = MERGED",
+     "print('merged processed dir:', PROCESSED)",
+     "print('feature file        :', hits[0])"),
+    ] if external else [])
+
+    check_cells_block = ([
+md("## Check the feature file is present before spending GPU time"),
+code("import pandas as pd",
+     f"path = os.path.join(PROCESSED, {needs['file']!r})",
+     "if not os.path.exists(path):",
+     "    raise SystemExit(",
+     f"        {needs['file']!r} + ' is missing from ' + PROCESSED +",
+     f"        '\\nBuild it in {needs['source']} ({needs['build']}) and attach that '",
+     "        'output here.')",
+     "feature = pd.read_parquet(path)",
+     "print('feature file:', feature.shape)",
+     "print('drugs       :', f'{len(feature):,}')"),
+    ] if needs else [])
+
+    warm_start_md = ([
+md("### Warm start — only if the budget forces it",
+   "",
+   "Widening the drug input means the Morgan checkpoint cannot simply be",
+   "loaded: `drug_block` gains input columns. `--init-from` copies the Morgan",
+   "columns it can and starts the new ones at **zero**, so at step zero the",
+   "network computes exactly what the Morgan model computed and the new feature",
+   "has to earn its weight from there. Two tests pin that equivalence.",
+   "",
+   "It turns ~6 GPU-hours of pretraining into a fraction of that — but a",
+   "warm-started run is not an independent one, and has to be reported as a",
+   "warm start. **Leave `INIT_FROM = None` unless you are out of quota.**")]
+   if is_fusion else [])
+
+    init_from_lines = (["",
+         "# None = train the drug branches from scratch, which is the clean",
+         "# comparison. To warm-start instead, attach a Morgan run and uncomment:",
+         "INIT_FROM = None",
+         "# INIT_FROM = glob.glob('/kaggle/input/**/runs/pretrain/best.pt', recursive=True)[0]"]
+        if is_fusion else ["", "INIT_FROM = None"])
 
     return [
 md(f"# DD-PRiSM-plus — {experiment['title']}",
@@ -348,7 +471,7 @@ md(f"# DD-PRiSM-plus — {experiment['title']}",
    f"**Drug representation: `{features}`**",
    "",
    experiment["what"],
-   *embeddings_note,
+   *needs_note,
    "",
    "**GPU session.** Accelerator → **GPU T4 x2**, Internet → **On**.",
    "",
@@ -404,7 +527,7 @@ code("import os, glob",
      "",
      "# This notebook owns this directory and no other. Two representations",
      "# produce models of different shapes, so sharing one would try to resume a",
-     "# 512-wide model from an 896-wide checkpoint -- or silently overwrite the",
+     "# 512-wide model from a wider checkpoint -- or silently overwrite the",
      "# baseline this experiment is meant to be measured against.",
      "print('features:', FEATURES)",
      "print('runs    :', RUNS)",
@@ -430,18 +553,9 @@ code("import os, glob",
      "print('processed:', PROCESSED)",
      "print('raw      :', DATA)"),
 
-*( [md("## Check the embeddings are there before spending GPU time"),
-    code("import pandas as pd",
-         "path = os.path.join(PROCESSED, 'drug_embeddings_chemberta.parquet')",
-         "if not os.path.exists(path):",
-         "    raise SystemExit(",
-         "        'drug_embeddings_chemberta.parquet is missing from ' + PROCESSED +",
-         "        '\\nRerun 02_preprocess with Internet ON -- it has an embedding '",
-         "        'cell now -- then attach that new version here.')",
-         "embeddings = pd.read_parquet(path)",
-         "print('embeddings:', embeddings.shape)",
-         "print('drugs     :', f'{len(embeddings):,}')")]
-   if experiment["needs_embeddings"] else [] ),
+*assemble_cells,
+
+*check_cells_block,
 
 md("## Resume from a previous session",
    "",
@@ -534,30 +648,13 @@ md("## Train",
    "",
    "`--max-hours` stops cleanly and checkpoints before Kaggle pulls the plug."),
 
-*( [md("### Warm start — only if the budget forces it",
-      "",
-      "Widening the drug input means the Morgan checkpoint cannot simply be",
-      "loaded: `drug_block` goes from 512 input columns to 896. `--init-from`",
-      "copies the 512 it can and starts the new columns at **zero**, so at step",
-      "zero the network computes exactly what the Morgan model computed and the",
-      "embedding has to earn its weight from there. Two tests pin that",
-      "equivalence.",
-      "",
-      "It turns ~6 GPU-hours of pretraining into a fraction of that — but a",
-      "warm-started run is not an independent one, and has to be reported as a",
-      "warm start. **Leave `INIT_FROM = None` unless you are out of quota.**")]
-   if experiment["needs_embeddings"] else [] ),
+*warm_start_md,
 
 code("MODEL = 'fast'      # 'original' for the authors' loop, 'fast' for the same maths batched",
      *( [f"STAGE = {' '.join(experiment['repair'])!r} if REPAIR else 'all'"]
         if experiment.get("repair") else
         ["STAGE = 'all'       # or e.g. 'finetune combination' to redo just those two"] ),
-     *( ["",
-         "# None = train the drug branches from scratch, which is the clean",
-         "# comparison. To warm-start instead, attach a Morgan run and uncomment:",
-         "INIT_FROM = None",
-         "# INIT_FROM = glob.glob('/kaggle/input/**/runs/pretrain/best.pt', recursive=True)[0]"]
-        if experiment["needs_embeddings"] else ["", "INIT_FROM = None"] ),
+     *init_from_lines,
      "",
      f"CURVE_WIDTH = {experiment.get('curve_width', 2)}"
      f"{'      # published' if experiment.get('curve_width', 2) == 2 else '      # published value is 2'}",
@@ -639,6 +736,9 @@ md("# DD-PRiSM-plus — Compare the experiments",
    "| `03_train` | `morgan` — the paper |",
    "| `04_experiment_fusion` | `morgan+chemberta` |",
    "| `05_experiment_chemberta` | `chemberta` |",
+   "| `07_experiment_curve_head` | `morgan`, curve head widened to 8 |",
+   "| `08_experiment_l1000` | `morgan+l1000` |",
+   "| `09_experiment_l1000_only` | `l1000` |",
    "",
    "Whichever are attached will appear. Missing ones are simply left out."),
 
@@ -737,6 +837,123 @@ md("## A caution on reading this",
 ]
 
 
+BUILD_L1000_CELLS = [
+md("# DD-PRiSM-plus — Build the L1000 drug signatures",
+   "",
+   "Produces `drug_signatures_l1000.parquet`: one 978-landmark-gene transcriptomic",
+   "signature per drug, from **LINCS Phase I (GSE92742)**, mapped to NSC by",
+   "InChIKey. **CPU session** — no GPU needed.",
+   "",
+   "Attach two inputs via **Add Input**:",
+   "",
+   "1. Your **01_setup_and_data** output — for `nsc_smiles.csv`.",
+   "2. A **Kaggle Dataset holding the GSE92742 Level-5 files** (below).",
+   "",
+   "The GSE92742 files, from the [GEO page](https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE92742)",
+   "(uncompress the `.gctx.gz` first):",
+   "",
+   "| file | size |",
+   "|---|---|",
+   "| `GSE92742_Broad_LINCS_Level5_COMPZ.MODZ_n473647x12328.gctx` | ~23 GB |",
+   "| `GSE92742_Broad_LINCS_gene_info.txt` | small |",
+   "| `GSE92742_Broad_LINCS_sig_info.txt` | ~100 MB |",
+   "| `GSE92742_Broad_LINCS_pert_info.txt` | small |",
+   "",
+   "> The `.gctx` is big, so attach it as a **Dataset** — it then lives in",
+   "> read-only `/kaggle/input` and does **not** count against your 20 GB working",
+   "> disk. Only the 978 landmark rows and the signatures of the drugs this study",
+   "> touches are ever read, so memory stays in the hundreds of MB."),
+
+code("import os, glob, subprocess",
+     "",
+     "REPO = '/kaggle/working/ddprism-plus'",
+     "OUT  = '/kaggle/working/l1000'",
+     "",
+     "ok = subprocess.run(['curl', '-sI', '--max-time', '15', 'https://github.com'],",
+     "                    capture_output=True).returncode == 0",
+     "print('internet:', 'ON' if ok else 'OFF  <-- enable it, then rerun')",
+     "",
+     "if os.path.exists(REPO):",
+     "    !cd {REPO} && git pull --quiet",
+     "else:",
+     "    !git clone --quiet https://github.com/SanaNiroomand/DD-PRiSM-plus.git {REPO}",
+     "os.chdir(REPO)",
+     "print('working in', os.getcwd())"),
+
+md("## Install",
+   "",
+   "`cmapPy` reads the `.gctx`; `rdkit` canonicalises SMILES to InChIKeys for the",
+   "NSC↔L1000 mapping."),
+
+code("!pip install --quiet cmapPy rdkit pyarrow",
+     "print('installed')"),
+
+md("## Find the inputs",
+   "",
+   "The four GSE92742 files and `nsc_smiles.csv` are located wherever Kaggle",
+   "mounted them, then linked into one staging folder so the builder sees them",
+   "together."),
+
+code("import glob, os",
+     "",
+     "def one(pattern, what):",
+     "    hits = glob.glob('/kaggle/input/**/' + pattern, recursive=True)",
+     "    if not hits:",
+     "        raise SystemExit('missing ' + what + ' (' + pattern + ') -- attach the '",
+     "                         'dataset that holds it via Add Input.')",
+     "    return hits[0]",
+     "",
+     "gctx     = one('*Level5_COMPZ.MODZ*.gctx', 'the Level-5 MODZ matrix')",
+     "geneinfo = one('*gene_info*.txt',          'gene_info')",
+     "siginfo  = one('*sig_info*.txt',           'sig_info')",
+     "pertinfo = one('*pert_info*.txt',          'pert_info')",
+     "smiles   = one('nsc_smiles.csv',           'nsc_smiles.csv (attach 01 output)')",
+     "",
+     "LINCS = '/kaggle/working/lincs'",
+     "DATA  = '/kaggle/working/raw'",
+     "os.makedirs(LINCS, exist_ok=True)",
+     "os.makedirs(DATA, exist_ok=True)",
+     "for src in (gctx, geneinfo, siginfo, pertinfo):",
+     "    dst = os.path.join(LINCS, os.path.basename(src))",
+     "    if not os.path.exists(dst):",
+     "        os.symlink(src, dst)",
+     "sm = os.path.join(DATA, 'nsc_smiles.csv')",
+     "if not os.path.exists(sm):",
+     "    os.symlink(smiles, sm)",
+     "",
+     "print('gctx     :', gctx)",
+     "print('sig_info :', siginfo)",
+     "print('nsc_smiles:', smiles)"),
+
+md("## Build the signatures",
+   "",
+   "Reads only the 978 landmark rows and the signatures of drugs it can map to an",
+   "NSC, averages each drug's signatures into one consensus vector, and writes the",
+   "parquet. `--all-compounds` maps every NSC with a SMILES; to restrict to just",
+   "the drugs the study uses, attach the `02_preprocess` output and point `--out`",
+   "at it instead.",
+   "",
+   "**Read the coverage line it prints** — it says how many of the drugs got an",
+   "L1000 signature. That is the honest scope of the whole L1000 experiment."),
+
+code("!python scripts/fetch_l1000.py --lincs {LINCS} --data {DATA} --out {OUT} --all-compounds"),
+
+md("## What came out"),
+
+code("import pandas as pd, os",
+     "frame = pd.read_parquet(os.path.join(OUT, 'drug_signatures_l1000.parquet'))",
+     "print('shape:', frame.shape)",
+     "print('drugs:', f'{len(frame):,}')",
+     "frame.iloc[:3, :6]"),
+
+md("## Save it",
+   "",
+   "**Save Version → Save & Run All (Commit).** The `08_experiment_l1000` and",
+   "`09_experiment_l1000_only` notebooks attach this output alongside the",
+   "`02_preprocess` output, via **Add Input → Your Work → Notebook Output**."),
+]
+
+
 def _as_python(source):
     """Make a notebook cell parseable as plain Python.
 
@@ -793,6 +1010,7 @@ def write(cells, name):
 def main():
     ok = write(CELLS, "01_setup_and_data.ipynb")
     ok = write(PREPROCESS_CELLS, "02_preprocess.ipynb") and ok
+    ok = write(BUILD_L1000_CELLS, "02b_build_l1000.ipynb") and ok
     for experiment in EXPERIMENTS:
         ok = write(train_cells(experiment), experiment["file"]) and ok
     ok = write(COMPARE_CELLS, "06_compare.ipynb") and ok
