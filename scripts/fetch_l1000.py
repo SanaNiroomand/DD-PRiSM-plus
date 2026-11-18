@@ -11,14 +11,16 @@ for ``--drug-features morgan+l1000``.
 
     python scripts/fetch_l1000.py --lincs lincs --data data --out processed
 
-The standard source is LINCS Phase I (GSE92742), the three files below plus the
-compound table, from https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE92742
-(GEO FTP mirror under series/GSE92nnn/GSE92742/suppl/):
+Two releases are supported, detected by file naming and columns:
 
-  GSE92742_Broad_LINCS_Level5_COMPZ.MODZ_n473647x12328.gctx   (~23 GB)
-  GSE92742_Broad_LINCS_sig_info.txt
-  GSE92742_Broad_LINCS_gene_info.txt
-  GSE92742_Broad_LINCS_pert_info.txt
+  * LINCS Phase I (GSE92742): Level5_COMPZ.MODZ gctx + sig_info / gene_info /
+    pert_info, from the GEO mirror under series/GSE92nnn/GSE92742/suppl/.
+  * CMap LINCS 2020 (the newer "beta", more drugs): level5_beta_trt_cp gctx +
+    siginfo_beta / geneinfo_beta / compoundinfo_beta, from
+    https://s3.amazonaws.com/macchiato.clue.io/builds/LINCS2020/ .
+
+Point --lincs at a directory holding one release's four files (the gctx plus its
+gene, signature and compound tables).
 
 The .gctx is large, but only the 978 landmark rows and the few thousand
 signature columns belonging to drugs this study actually uses are ever read, so
@@ -205,13 +207,28 @@ def expand_to_nsc(consensus, nsc_to_perts):
 # GCTX reading (needs cmapPy; imported lazily so the helpers above stay light)
 # --------------------------------------------------------------------------
 
+def select_landmark(info):
+    """(ids, symbols) for the 978 landmark genes, from either LINCS schema.
+
+    Phase I (GSE92742): columns pr_gene_id / pr_is_lm / pr_gene_symbol.
+    2020 beta (CMap LINCS 2020): columns gene_id / feature_space / gene_symbol,
+    where the landmark rows are feature_space == 'landmark'.
+    """
+    if "pr_is_lm" in info.columns:
+        lm = info[info["pr_is_lm"] == 1].sort_values("pr_gene_id")
+        return ([str(g) for g in lm["pr_gene_id"].tolist()],
+                lm["pr_gene_symbol"].tolist())
+    if "feature_space" in info.columns:
+        lm = info[info["feature_space"] == "landmark"].sort_values("gene_id")
+        return ([str(g) for g in lm["gene_id"].tolist()],
+                lm["gene_symbol"].tolist())
+    raise SystemExit("gene_info has neither pr_is_lm (Phase I) nor feature_space "
+                     "(2020 beta); unrecognised LINCS gene_info format")
+
+
 def landmark_genes(gene_info_path):
     """(ids, symbols) for the 978 landmark genes, sorted by gene id."""
-    info = pd.read_csv(gene_info_path, sep="\t")
-    lm = info[info["pr_is_lm"] == 1].sort_values("pr_gene_id")
-    ids = [str(g) for g in lm["pr_gene_id"].tolist()]
-    symbols = lm["pr_gene_symbol"].tolist()
-    return ids, symbols
+    return select_landmark(pd.read_csv(gene_info_path, sep="\t"))
 
 
 def read_landmark_matrix(gctx_path, gene_ids, sig_ids):
@@ -245,16 +262,21 @@ def main():
 
     banner("L1000 drug signatures (GSE92742 Level-5 MODZ)")
 
-    def find(pattern, required=True):
-        hits = sorted(args.lincs.glob(pattern))
-        if not hits and required:
-            raise SystemExit(f"missing {pattern} under {args.lincs}")
-        return hits[0] if hits else None
+    def find(patterns, required=True):
+        for pattern in ([patterns] if isinstance(patterns, str) else patterns):
+            hits = sorted(args.lincs.glob(pattern))
+            if hits:
+                return hits[0]
+        if required:
+            raise SystemExit(f"missing {patterns} under {args.lincs}")
+        return None
 
-    gctx = Path(args.gctx) if args.gctx else find("*Level5_COMPZ.MODZ*.gctx")
-    gene_info = find("*gene_info*.txt")
-    sig_info = find("*sig_info*.txt")
-    pert_info = find("*pert_info*.txt")
+    # Accept both the Phase I (GSE92742) and the 2020 beta file namings.
+    gctx = Path(args.gctx) if args.gctx else find(
+        ["*Level5_COMPZ.MODZ*.gctx", "*evel5*beta*.gctx", "*evel5*.gctx"])
+    gene_info = find(["*gene_info*.txt", "*geneinfo*.txt"])
+    sig_info = find(["*sig_info*.txt", "*siginfo*.txt"])
+    pert_info = find(["*pert_info*.txt", "*compoundinfo*.txt"])
 
     wanted = None if args.all_compounds else used_drug_ids(args.out)
     if wanted is not None:

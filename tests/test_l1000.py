@@ -98,3 +98,27 @@ def test_expand_to_nsc_drops_unmatched():
     consensus = pd.DataFrame([[1.0]], index=["P1"], columns=["g1"])
     frame = expand_to_nsc(consensus, {101: ["P_absent"]})
     assert len(frame) == 0
+
+
+def test_select_landmark_phase1_schema():
+    from scripts.fetch_l1000 import select_landmark
+    info = pd.DataFrame({
+        "pr_gene_id": [10, 5, 7],
+        "pr_is_lm": [1, 1, 0],
+        "pr_gene_symbol": ["GJ", "GE", "NO"],
+    })
+    ids, symbols = select_landmark(info)
+    assert ids == ["5", "10"]            # landmark only, sorted by id
+    assert symbols == ["GE", "GJ"]
+
+
+def test_select_landmark_beta_schema():
+    from scripts.fetch_l1000 import select_landmark
+    info = pd.DataFrame({
+        "gene_id": [10, 5, 7],
+        "feature_space": ["landmark", "landmark", "inferred"],
+        "gene_symbol": ["GJ", "GE", "NO"],
+    })
+    ids, symbols = select_landmark(info)
+    assert ids == ["5", "10"]
+    assert symbols == ["GE", "GJ"]
