@@ -87,7 +87,8 @@ def standardise(values):
     return ((values - mean) / std).astype(np.float32)
 
 
-def load_drug_features(processed, spec, restrict=None, standardize=True):
+def load_drug_features(processed, spec, restrict=None, standardize=True,
+                       fill_missing=False):
     """Assemble the per-drug feature matrix.
 
     Args:
@@ -121,7 +122,8 @@ def load_drug_features(processed, spec, restrict=None, standardize=True):
             f"  expected {', '.join(str(source_path(processed, n)) for n in missing)}\n"
             "  Build them with:\n" + "\n".join(hints))
 
-    blocks, report = [], {"sources": [], "standardized": standardize}
+    blocks, report = [], {"sources": [], "standardized": standardize,
+                          "fill_missing": fill_missing}
     index = None
     for name in names:
         frame = pd.read_parquet(source_path(processed, name))
@@ -129,7 +131,10 @@ def load_drug_features(processed, spec, restrict=None, standardize=True):
         frame = frame[~frame.index.duplicated(keep="first")]
         report["sources"].append({"name": name, "drugs": len(frame),
                                   "width": frame.shape[1]})
-        index = frame.index if index is None else index.intersection(frame.index)
+        if index is None:
+            index = frame.index            # base source (e.g. Morgan) sets the universe
+        elif not fill_missing:
+            index = index.intersection(frame.index)
         blocks.append((name, frame))
 
     if restrict is not None:
@@ -146,12 +151,30 @@ def load_drug_features(processed, spec, restrict=None, standardize=True):
 
     parts = []
     for name, frame in blocks:
-        values = frame.loc[index].to_numpy()
-        if name in BINARY_SOURCES:
-            parts.append(values.astype(np.uint8))
+        if fill_missing:
+            present = index.intersection(frame.index)
+            report.setdefault("coverage", []).append(
+                {"name": name, "present": int(len(present)), "of": int(len(index))})
+            pos = index.get_indexer(present)
+            if name in BINARY_SOURCES:
+                full = np.zeros((len(index), frame.shape[1]), dtype=np.uint8)
+                if len(present):
+                    full[pos] = frame.loc[present].to_numpy().astype(np.uint8)
+                parts.append(full)
+            else:
+                full = np.zeros((len(index), frame.shape[1]), dtype=np.float32)
+                if len(present):
+                    vals = frame.loc[present].to_numpy().astype(np.float32)
+                    vals = standardise(vals) if standardize else vals
+                    full[pos] = vals
+                parts.append(full)
         else:
-            values = values.astype(np.float32)
-            parts.append(standardise(values) if standardize else values)
+            values = frame.loc[index].to_numpy()
+            if name in BINARY_SOURCES:
+                parts.append(values.astype(np.uint8))
+            else:
+                values = values.astype(np.float32)
+                parts.append(standardise(values) if standardize else values)
 
     if all(name in BINARY_SOURCES for name, _ in blocks):
         matrix = np.concatenate(parts, axis=1).astype(np.uint8)

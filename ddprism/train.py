@@ -211,7 +211,7 @@ def load_gene_sets(gmt_path, valid_genes):
 
 
 def build_data(processed, gmt_path, device, num_buckets=8, require_186=True,
-               drug_features="morgan", standardize=True):
+               drug_features="morgan", standardize=True, fill_missing=False):
     expression = pd.read_parquet(processed / "expression_zscore.parquet")
 
     # Chem2D holds 281,264 compounds; this study touches about 51,000. Keeping
@@ -219,7 +219,7 @@ def build_data(processed, gmt_path, device, num_buckets=8, require_186=True,
     # carries a float embedding, so the table is cut to what is actually used.
     drug_ids, drug_matrix, feature_report = load_drug_features(
         processed, drug_features, restrict=used_drug_ids(processed),
-        standardize=standardize)
+        standardize=standardize, fill_missing=fill_missing)
 
     # The expression matrix is indexed by DepMap ModelID (ACH-...) while every
     # response table keys on the NCI60 name ("786-0"). Re-key here, and drop the
@@ -574,6 +574,14 @@ def main():
                              "'molformer' are pretrained embeddings built by "
                              "scripts/embed_drugs.py; 'morgan+chemberta' "
                              "concatenates them.")
+    parser.add_argument("--drug-feature-fill", choices=["intersect", "zero"],
+                        default="intersect",
+                        help="combine feature sources of unequal coverage: "
+                             "'intersect' keeps only drugs in every source (the "
+                             "paper's default); 'zero' keeps every drug the "
+                             "first source covers and zero-fills missing "
+                             "secondary features, so a partial source like "
+                             "L1000 does not shrink the dataset.")
     parser.add_argument("--no-standardize", action="store_true",
                         help="feed embeddings at their native scale instead of "
                              "z-scoring each dimension across the drug library")
@@ -600,7 +608,8 @@ def main():
     data, gene_set, spec = build_data(
         args.processed, gmt, device, args.buckets,
         drug_features=args.drug_features,
-        standardize=not args.no_standardize)
+        standardize=not args.no_standardize,
+        fill_missing=args.drug_feature_fill == "zero")
 
     stages = (["pretrain", "finetune", "combination"]
               if "all" in args.stage else list(args.stage))
@@ -623,6 +632,7 @@ def main():
     args.out.mkdir(parents=True, exist_ok=True)
     (args.out / "config.json").write_text(json.dumps({
         "drug_features": args.drug_features,
+        "drug_feature_fill": args.drug_feature_fill,
         "drug_dim": int(data.drug_dim),
         "standardize": not args.no_standardize,
         "curve_width": args.curve_width,

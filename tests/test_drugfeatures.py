@@ -276,3 +276,36 @@ def test_warm_start_lets_gradients_reach_the_new_columns(tmp_path):
     output.sum().backward()
 
     assert wide.drug_block[0].weight.grad[:, 512:].abs().sum() > 0
+
+
+
+def test_zero_fill_keeps_all_base_drugs(processed):
+    """A partial secondary source must not shrink the dataset under zero-fill."""
+    emb = pd.read_parquet(processed / "drug_embeddings_chemberta.parquet")
+    emb.iloc[:10].to_parquet(processed / "drug_embeddings_chemberta.parquet")
+
+    # Default (intersect) collapses to the 10 drugs that have both sources.
+    _, strict, _ = load_drug_features(processed, "morgan+chemberta")
+    assert strict.shape[0] == 10
+
+    # Zero-fill keeps every drug the base (Morgan) covers; the rest get zeros.
+    _, fused, report = load_drug_features(processed, "morgan+chemberta",
+                                          fill_missing=True)
+    assert fused.shape[0] == 40
+    assert fused.shape[1] == 512 + 384
+    cov = {c["name"]: c for c in report["coverage"]}
+    assert cov["morgan"]["present"] == 40
+    assert cov["chemberta"]["present"] == 10 and cov["chemberta"]["of"] == 40
+    # Exactly the 10 covered drugs carry a non-zero embedding block.
+    assert int((fused[:, 512:] != 0).any(axis=1).sum()) == 10
+    # The fingerprint half is untouched 0/1 for every drug.
+    assert set(np.unique(fused[:, :512])) <= {0.0, 1.0}
+
+
+def test_zero_fill_matches_intersect_when_coverage_is_complete(processed):
+    """With full coverage, zero-fill and intersect produce the same matrix."""
+    _, strict, _ = load_drug_features(processed, "morgan+chemberta")
+    _, filled, _ = load_drug_features(processed, "morgan+chemberta",
+                                      fill_missing=True)
+    assert strict.shape == filled.shape
+    assert np.allclose(strict, filled)

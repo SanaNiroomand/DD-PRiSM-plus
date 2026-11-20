@@ -340,6 +340,7 @@ EXPERIMENTS = [
         "file": "08_experiment_l1000.ipynb",
         "features": "morgan+l1000",
         "curve_width": 2,
+        "drug_feature_fill": "zero",
         "runs": "/kaggle/working/runs-morgan-l1000",
         "title": "Experiment 4: Morgan + L1000",
         "what": "The fingerprint **concatenated with a 978-gene L1000 "
@@ -385,6 +386,8 @@ def train_cells(experiment):
     features = experiment["features"]
     runs = experiment["runs"]
     folder = runs.rsplit("/", 1)[-1]
+    drug_fill = (f" --drug-feature-fill {experiment['drug_feature_fill']}"
+                 if experiment.get("drug_feature_fill") else "")
 
     needs = experiment.get("needs")
     # A fusion run puts Morgan first, so a Morgan checkpoint can warm-start it.
@@ -660,7 +663,7 @@ code("MODEL = 'fast'      # 'original' for the authors' loop, 'fast' for the sam
      f"{'      # published' if experiment.get('curve_width', 2) == 2 else '      # published value is 2'}",
      "",
      "ARGS = (f'--data {DATA} --processed {PROCESSED} --out {RUNS} '",
-     "        f'--model {MODEL} --stage {STAGE} --drug-features {FEATURES} '",
+     "        f'--model {MODEL} --stage {STAGE} --drug-features {FEATURES}" + drug_fill + " '",
      "        f'--curve-width {CURVE_WIDTH}')",
      "if INIT_FROM:",
      "    ARGS += f' --init-from {INIT_FROM}'",
@@ -694,7 +697,7 @@ md("## Score on the held-out sets — the numbers to quote",
    "No training, one forward pass per split."),
 
 code("!python -m ddprism.evaluate --data {DATA} --processed {PROCESSED} "
-     "--runs {RUNS} --drug-features {FEATURES}"),
+     "--runs {RUNS} --drug-features {FEATURES}" + drug_fill),
 
 md("## The curve-prediction bottleneck, measured",
    "",

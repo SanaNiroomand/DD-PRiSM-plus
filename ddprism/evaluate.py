@@ -228,6 +228,10 @@ def main():
     parser.add_argument("--drug-features", default=None,
                         help="defaults to whatever the run's config.json says, "
                              "falling back to 'morgan'")
+    parser.add_argument("--drug-feature-fill", choices=["intersect", "zero"],
+                        default=None,
+                        help="defaults to the run's config.json, else "
+                             "'intersect'")
     parser.add_argument("--out", type=Path, default=None)
     args = parser.parse_args()
 
@@ -240,12 +244,14 @@ def main():
 
     config = run_config(args.runs)
     features = args.drug_features or config.get("drug_features", "morgan")
+    fill = args.drug_feature_fill or config.get("drug_feature_fill", "intersect")
 
     banner(f"inputs  (device: {device})")
     data, gene_set, spec = build_data(
         args.processed, next(args.data.glob("*kegg_legacy*.gmt")), device,
         args.buckets, drug_features=features,
-        standardize=config.get("standardize", True))
+        standardize=config.get("standardize", True),
+        fill_missing=fill == "zero")
 
     # The checkpoint is the authority on how wide the drug input has to be.
     expected = checkpoint_drug_dim(anchor)
