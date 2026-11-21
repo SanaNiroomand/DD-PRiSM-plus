@@ -26,7 +26,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from ddprism.data import MonotherapyBatches
 from ddprism.losses import pearson, rmse
 from ddprism.train import (banner, build_data, build_monotherapy,
-                           extract_monotherapy_outputs)
+                           extract_monotherapy_outputs, restrict_to_known)
 from original.ddprism_original import CombinationTherapyModel
 
 # Table 2 and Figures S4-S6; the paper quotes these on the unseen pair set.
@@ -292,6 +292,7 @@ def main():
             frame = pd.read_parquet(path)
             if "NSC1" in frame.columns:
                 frame = frame.rename(columns={"NSC1": "NSC"})
+            frame = restrict_to_known(frame, data, label=f"{stage}/{split}")
             if frame.empty:
                 continue
             results[stage][split] = score_monotherapy(
@@ -309,6 +310,8 @@ def main():
             if not path.exists():
                 continue
             frame = pd.read_parquet(path)
+            frame = restrict_to_known(frame, data, drug_cols=("NSC1", "NSC2"),
+                                      label=f"combination/{split}")
             if frame.empty:
                 continue
             results["combination"][split] = score_combination(

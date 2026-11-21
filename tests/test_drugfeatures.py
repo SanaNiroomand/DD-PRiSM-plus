@@ -309,3 +309,23 @@ def test_zero_fill_matches_intersect_when_coverage_is_complete(processed):
                                       fill_missing=True)
     assert strict.shape == filled.shape
     assert np.allclose(strict, filled)
+
+
+
+def test_restrict_to_known_drops_unknown_cells_and_drugs():
+    import types
+    from ddprism.train import restrict_to_known
+    data = types.SimpleNamespace(cell_index={"A": 0, "B": 1}, drug_index={10: 0, 20: 1})
+    frame = pd.DataFrame({"CELLNAME": ["A", "A", "C", "B"], "NSC": [10, 20, 10, 99]})
+    kept = restrict_to_known(frame, data)
+    assert len(kept) == 2
+    assert list(kept.NSC) == [10, 20]
+
+
+def test_restrict_to_known_requires_both_drugs_of_a_pair():
+    import types
+    from ddprism.train import restrict_to_known
+    data = types.SimpleNamespace(cell_index={"A": 0}, drug_index={10: 0, 20: 1})
+    frame = pd.DataFrame({"CELLNAME": ["A", "A"], "NSC1": [10, 10], "NSC2": [20, 99]})
+    kept = restrict_to_known(frame, data, drug_cols=("NSC1", "NSC2"))
+    assert len(kept) == 1

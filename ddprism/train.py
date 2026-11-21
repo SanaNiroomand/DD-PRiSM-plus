@@ -210,6 +210,27 @@ def load_gene_sets(gmt_path, valid_genes):
     return restricted
 
 
+def restrict_to_known(frame, data, drug_cols=("NSC",), cell_col="CELLNAME",
+                      label=""):
+    """Drop response rows whose cell line or drug has no feature vector.
+
+    With full-coverage sources (Morgan, or any source under zero-fill) this is a
+    no-op. It matters for a partially-covering source used on its own -- e.g.
+    'l1000' alone -- where the honest experiment trains and scores only on the
+    drugs that actually have a signature, instead of crashing on the rest.
+    """
+    mask = frame[cell_col].isin(data.cell_index)
+    for col in drug_cols:
+        if col in frame.columns:
+            mask = mask & frame[col].isin(data.drug_index)
+    kept = frame[mask].reset_index(drop=True)
+    dropped = len(frame) - len(kept)
+    if dropped:
+        print(f"  restricted {label}: dropped {dropped:,}/{len(frame):,} rows "
+              f"with no feature vector for their drug or cell line")
+    return kept
+
+
 def build_data(processed, gmt_path, device, num_buckets=8, require_186=True,
                drug_features="morgan", standardize=True, fill_missing=False):
     expression = pd.read_parquet(processed / "expression_zscore.parquet")
@@ -646,6 +667,7 @@ def main():
     if "pretrain" in stages:
         banner("stage 1/3  pretrain on NCI60")
         frame = pd.read_parquet(args.processed / "nci60_splits" / "trainval.parquet")
+        frame = restrict_to_known(frame, data, label="nci60 pretrain")
         train_frame, val_frame = split_trainval(frame, seed=args.seed)
         print(f"  train {len(train_frame):,}   validation {len(val_frame):,}")
 
@@ -677,6 +699,7 @@ def main():
 
         frame = require_split(args.processed, "almanac_mono_splits", "trainval")
         frame = frame.rename(columns={"NSC1": "NSC"})
+        frame = restrict_to_known(frame, data, label="almanac mono")
         train_frame, val_frame = split_trainval(frame, seed=args.seed)
         print(f"  train {len(train_frame):,}   validation {len(val_frame):,}")
 
@@ -706,6 +729,8 @@ def main():
             print(f"  loaded fine-tuned weights from {best}")
 
         combo = require_split(args.processed, "almanac_combo_splits", "trainval")
+        combo = restrict_to_known(combo, data, drug_cols=("NSC1", "NSC2"),
+                                  label="almanac combo")
         print(f"  combination rows: {len(combo):,}  (trainval only)")
 
         print("  extracting pathway attention from the frozen Monotherapy model")
