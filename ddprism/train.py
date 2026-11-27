@@ -232,7 +232,8 @@ def restrict_to_known(frame, data, drug_cols=("NSC",), cell_col="CELLNAME",
 
 
 def build_data(processed, gmt_path, device, num_buckets=8, require_186=True,
-               drug_features="morgan", standardize=True, fill_missing=False):
+               drug_features="morgan", standardize=True, fill_missing=False,
+               restrict_to_source=None):
     expression = pd.read_parquet(processed / "expression_zscore.parquet")
 
     # Chem2D holds 281,264 compounds; this study touches about 51,000. Keeping
@@ -240,7 +241,8 @@ def build_data(processed, gmt_path, device, num_buckets=8, require_186=True,
     # carries a float embedding, so the table is cut to what is actually used.
     drug_ids, drug_matrix, feature_report = load_drug_features(
         processed, drug_features, restrict=used_drug_ids(processed),
-        standardize=standardize, fill_missing=fill_missing)
+        standardize=standardize, fill_missing=fill_missing,
+        restrict_to_source=restrict_to_source)
 
     # The expression matrix is indexed by DepMap ModelID (ACH-...) while every
     # response table keys on the NCI60 name ("786-0"). Re-key here, and drop the
@@ -603,6 +605,11 @@ def main():
                              "first source covers and zero-fills missing "
                              "secondary features, so a partial source like "
                              "L1000 does not shrink the dataset.")
+    parser.add_argument("--restrict-to-source", default=None,
+                        help="restrict the drug universe to drugs "
+                             "covered by this source (e.g. 'l1000'), "
+                             "so different --drug-features compare on "
+                             "the same drugs.")
     parser.add_argument("--no-standardize", action="store_true",
                         help="feed embeddings at their native scale instead of "
                              "z-scoring each dimension across the drug library")
@@ -630,7 +637,8 @@ def main():
         args.processed, gmt, device, args.buckets,
         drug_features=args.drug_features,
         standardize=not args.no_standardize,
-        fill_missing=args.drug_feature_fill == "zero")
+        fill_missing=args.drug_feature_fill == "zero",
+        restrict_to_source=args.restrict_to_source)
 
     stages = (["pretrain", "finetune", "combination"]
               if "all" in args.stage else list(args.stage))
@@ -654,6 +662,7 @@ def main():
     (args.out / "config.json").write_text(json.dumps({
         "drug_features": args.drug_features,
         "drug_feature_fill": args.drug_feature_fill,
+        "restrict_to_source": args.restrict_to_source,
         "drug_dim": int(data.drug_dim),
         "standardize": not args.no_standardize,
         "curve_width": args.curve_width,

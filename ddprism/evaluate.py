@@ -232,6 +232,8 @@ def main():
                         default=None,
                         help="defaults to the run's config.json, else "
                              "'intersect'")
+    parser.add_argument("--restrict-to-source", default=None,
+                        help="defaults to the run's config.json")
     parser.add_argument("--out", type=Path, default=None)
     args = parser.parse_args()
 
@@ -245,13 +247,16 @@ def main():
     config = run_config(args.runs)
     features = args.drug_features or config.get("drug_features", "morgan")
     fill = args.drug_feature_fill or config.get("drug_feature_fill", "intersect")
+    restrict_to_source = (args.restrict_to_source
+                          or config.get("restrict_to_source"))
 
     banner(f"inputs  (device: {device})")
     data, gene_set, spec = build_data(
         args.processed, next(args.data.glob("*kegg_legacy*.gmt")), device,
         args.buckets, drug_features=features,
         standardize=config.get("standardize", True),
-        fill_missing=fill == "zero")
+        fill_missing=fill == "zero",
+        restrict_to_source=restrict_to_source)
 
     # The checkpoint is the authority on how wide the drug input has to be.
     expected = checkpoint_drug_dim(anchor)

@@ -88,7 +88,7 @@ def standardise(values):
 
 
 def load_drug_features(processed, spec, restrict=None, standardize=True,
-                       fill_missing=False):
+                       fill_missing=False, restrict_to_source=None):
     """Assemble the per-drug feature matrix.
 
     Args:
@@ -142,6 +142,13 @@ def load_drug_features(processed, spec, restrict=None, standardize=True,
         report["requested"] = len(wanted)
         report["unavailable"] = len(wanted.difference(index))
         index = index.intersection(wanted)
+
+    if restrict_to_source is not None:
+        other = pd.read_parquet(source_path(processed, restrict_to_source))
+        other.index = other.index.astype(np.int64)
+        report["restrict_to_source"] = restrict_to_source
+        report["source_universe"] = int(len(other.index))
+        index = index.intersection(other.index)
 
     index = index.sort_values()
     if len(index) == 0:

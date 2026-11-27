@@ -329,3 +329,15 @@ def test_restrict_to_known_requires_both_drugs_of_a_pair():
     frame = pd.DataFrame({"CELLNAME": ["A", "A"], "NSC1": [10, 10], "NSC2": [20, 99]})
     kept = restrict_to_known(frame, data, drug_cols=("NSC1", "NSC2"))
     assert len(kept) == 1
+
+
+
+def test_restrict_to_source_limits_universe_to_that_source(processed):
+    """Restricting to a source compares every spec on the same covered drugs."""
+    emb = pd.read_parquet(processed / "drug_embeddings_chemberta.parquet")
+    emb.iloc[:10].to_parquet(processed / "drug_embeddings_chemberta.parquet")
+    ids, matrix, report = load_drug_features(processed, "morgan",
+                                             restrict_to_source="chemberta")
+    assert len(ids) == 10
+    assert matrix.shape[0] == 10
+    assert report["restrict_to_source"] == "chemberta"
