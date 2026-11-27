@@ -16,6 +16,10 @@ CONFIGS = [
     ("morgan-l1000", "morgan+l1000", ["--drug-feature-fill", "zero"]),
     ("l1000",        "l1000",        []),
 ]
+_only = os.environ.get("FAIR_CONFIG")
+if _only:
+    keep = set(_only.split(","))
+    CONFIGS = [c for c in CONFIGS if c[0] in keep]
 
 def one(pattern):
     hits = glob.glob(f"/kaggle/input/**/{pattern}", recursive=True)
